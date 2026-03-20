@@ -1,0 +1,23 @@
+[package]
+name = "verifiedx-circuits"
+version = "0.1.0"
+edition = "2021"
+description = "VerifiedX PLONK circuits (v0 PI binding + future VFX shield/transfer)"
+license = "MPL"
+
+[dependencies]
+plonk-core = { path = "../plonk-core" }
+ark-bls12-381 = { version = "0.3", features = ["curve"] }
+ark-ec = { version = "0.3", features = ["std"] }
+ark-ed-on-bls12-381 = { version = "0.3" }
+ark-ff = { version = "0.3", features = ["std"] }
+ark-poly = { version = "0.3" }
+ark-poly-commit = { version = "0.3" }
+ark-serialize = { version = "0.3", features = ["derive"] }
+rand = { version = "0.8", features = ["std_rng"] }
+sha2 = "0.10"
+thiserror = "1.0"
+
+[[bin]]
+name = "vfx_plonk_setup"
+path = "src/bin/vfx_plonk_setup.rs"

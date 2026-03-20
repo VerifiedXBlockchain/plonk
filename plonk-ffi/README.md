@@ -34,6 +34,9 @@ cp target/release/libplonk_ffi.dylib /path/to/VerifiedX-Core/ReserveBlockCore/Pl
 
 ## ABI
 
-Exports match `PlonkNative.cs`: `pedersen_commit`, `pedersen_verify`, `pedersen_commitment_add` (homomorphic G1 add), `poseidon_hash`, `merkle_tree_*`, `nullifier_derive`, `plonk_load_params`, `plonk_capabilities`, `plonk_verify` (validates **VFXPI1** public-input layout; cryptographic verify still **Phase 4** until circuits ship — returns `ERR_NOT_IMPLEMENTED` after layout checks).
+Exports match `PlonkNative.cs`: `pedersen_commit`, `pedersen_verify`, `pedersen_commitment_add` (homomorphic G1 add), `poseidon_hash`, `merkle_tree_*`, `nullifier_derive`, `plonk_load_params`, `plonk_capabilities`, `plonk_verify`.
+
+- **`plonk_load_params`**: if the file begins with **`VXPLNK01`**, it is deserialized as [`VfxPlonkParamsBlob`](../verifiedx-circuits/src/v0_pi_binding.rs) (from `cargo run -p verifiedx-circuits --bin vfx_plonk_setup`). Then **`plonk_capabilities`** sets **`PLONK_CAP_VERIFY_V1`** and **`plonk_verify`** performs real PLONK verification (**v0 digest binding** — see [`verifiedx-circuits/README.md`](../verifiedx-circuits/README.md)). Other files are stored as opaque bytes (legacy).
+- If no **`VXPLNK01`** params are loaded, **`plonk_verify`** returns **`ERR_NOT_IMPLEMENTED`** after VFXPI1 layout checks (same as before for crypto).
 
 VerifiedX **vBTC** shielded asset keys (`VBTC:{SmartContractUID}`) and PLONK public-input alignment: see **[VERIFIEDX_VBTC.md](./VERIFIEDX_VBTC.md)**.

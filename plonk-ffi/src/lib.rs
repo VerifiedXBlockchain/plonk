@@ -1,5 +1,6 @@
 //! C ABI for VerifiedX privacy primitives (Phase 1).
-//! `plonk_verify` validates `PlonkPublicInputsV1` (VFXPI1) layout; full PLONK verification waits on circuits + SRS (Phase 4+).
+//! `plonk_verify` validates `PlonkPublicInputsV1` (VFXPI1), then — if `VXPLNK01` params were loaded — runs **v0** PLONK verify
+//! (`verifiedx-circuits`: SHA-256 digest binding to the PI blob; not full Pedersen/Merkle/nullifier logic yet).
 
 mod merkle;
 mod pedersen;
@@ -11,8 +12,12 @@ use std::os::raw::c_char;
 use std::sync::Mutex;
 
 use once_cell::sync::Lazy;
+use verifiedx_circuits::VfxPlonkParamsBlob;
 
 static PARAMS: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(Vec::new()));
+/// `VXPLNK01` blob from `vfx_plonk_setup` / `verifiedx-circuits`; enables real `plonk_verify` (v0 digest binding).
+static VFX_PLONK_V0: Lazy<Mutex<Option<VfxPlonkParamsBlob>>> =
+    Lazy::new(|| Mutex::new(None));
 static MERKLE: Lazy<Mutex<merkle::MerkleForest>> =
     Lazy::new(|| Mutex::new(merkle::MerkleForest::new()));
 
@@ -26,6 +31,20 @@ pub const ERR_NOT_IMPLEMENTED: i32 = -6;
 pub const G1_COMPRESSED_LEN: usize = 48;
 pub const FR_LEN: usize = 32;
 
+/// Bit 0: v0 PLONK verify available (`VXPLNK01` params loaded). Matches C# `PlonkNative.CapVerifyV1`.
+pub const PLONK_CAP_VERIFY_V1: u32 = 1;
+/// Bit 1: VFXPI1 layout parsing in `plonk_verify`.
+pub const PLONK_CAP_PARSE_PUBLIC_INPUTS_V1: u32 = 2;
+
+#[no_mangle]
+pub extern "C" fn plonk_capabilities() -> u32 {
+    let mut c = PLONK_CAP_PARSE_PUBLIC_INPUTS_V1;
+    if VFX_PLONK_V0.lock().unwrap().is_some() {
+        c |= PLONK_CAP_VERIFY_V1;
+    }
+    c
+}
+
 #[no_mangle]
 pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
     if params_path.is_null() {
@@ -38,9 +57,21 @@ pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
     };
     match std::fs::read(path) {
         Ok(bytes) => {
-            let mut g = PARAMS.lock().unwrap();
-            *g = bytes;
-            SUCCESS
+            if bytes.len() >= 8 && &bytes[..8] == b"VXPLNK01" {
+                match VfxPlonkParamsBlob::deserialize(&bytes) {
+                    Ok(blob) => {
+                        *VFX_PLONK_V0.lock().unwrap() = Some(blob);
+                        *PARAMS.lock().unwrap() = bytes;
+                        SUCCESS
+                    }
+                    Err(_) => ERR_CRYPTO,
+                }
+            } else {
+                *VFX_PLONK_V0.lock().unwrap() = None;
+                let mut g = PARAMS.lock().unwrap();
+                *g = bytes;
+                SUCCESS
+            }
         }
         Err(_) => ERR_CRYPTO,
     }
@@ -233,7 +264,13 @@ pub extern "C" fn plonk_verify(
     if circuit_type != parsed as u8 {
         return 0;
     }
-    // PLONK cryptographic verification (SRS + circuits) — Phase 4+ in this workspace.
+    let proof_slice = unsafe { std::slice::from_raw_parts(proof, proof_len) };
+    if let Some(ref blob) = *VFX_PLONK_V0.lock().unwrap() {
+        return match verifiedx_circuits::verify_vfxpi_v0(blob, proof_slice, pi) {
+            Ok(()) => 1,
+            Err(_) => 0,
+        };
+    }
     ERR_NOT_IMPLEMENTED
 }
 

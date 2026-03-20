@@ -31,6 +31,7 @@ members = [
     "plonk-core",
     "plonk-hashing",
     "plonk-ffi",
+    "verifiedx-circuits",
 ]
 
 [dependencies]
