@@ -34,4 +34,4 @@ cp target/release/libplonk_ffi.dylib /path/to/VerifiedX-Core/ReserveBlockCore/Pl
 
 ## ABI
 
-Exports match `PlonkNative.cs`: `pedersen_*`, `poseidon_hash`, `merkle_tree_*`, `nullifier_derive`, `plonk_load_params`, `plonk_verify` (stub).
+Exports match `PlonkNative.cs`: `pedersen_commit`, `pedersen_verify`, `pedersen_commitment_add` (homomorphic G1 add), `poseidon_hash`, `merkle_tree_*`, `nullifier_derive`, `plonk_load_params`, `plonk_verify` (stub).

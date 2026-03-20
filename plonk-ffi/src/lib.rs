@@ -85,6 +85,28 @@ pub extern "C" fn pedersen_verify(
 }
 
 #[no_mangle]
+pub extern "C" fn pedersen_commitment_add(
+    commitment_a: *const u8,
+    commitment_b: *const u8,
+    commitment_out: *mut u8,
+) -> i32 {
+    if commitment_a.is_null() || commitment_b.is_null() || commitment_out.is_null() {
+        return ERR_NULL;
+    }
+    let a = unsafe { std::slice::from_raw_parts(commitment_a, G1_COMPRESSED_LEN) };
+    let b = unsafe { std::slice::from_raw_parts(commitment_b, G1_COMPRESSED_LEN) };
+    match pedersen::commitment_add(a, b) {
+        Ok(c) => {
+            unsafe {
+                std::ptr::copy_nonoverlapping(c.as_ptr(), commitment_out, G1_COMPRESSED_LEN);
+            }
+            SUCCESS
+        }
+        Err(_) => ERR_CRYPTO,
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn poseidon_hash(
     inputs: *const u8,
     inputs_len: usize,
