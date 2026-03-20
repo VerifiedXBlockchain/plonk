@@ -15,15 +15,20 @@ The in-circuit constraint binds a witness to `-H` via the standard PLONK public-
 - Lock the **proof ↔ public-input bytes ↔ verifier** pipeline.
 - Allow `plonk_ffi` to return **`plonk_verify == 1`** when a `VXPLNK01` params file is loaded.
 
-### Params file (`VXPLNK01`)
+### Params files
 
-Generate with:
+| Magic | Contents |
+|-------|----------|
+| **`VXPLNK01`** | SRS + verifier key + PI row — **verify-only** (nodes that never prove) |
+| **`VXPLNK02`** | SRS + verifier + **prover** key + PI row — required for **`plonk_prove_v0`** / wallet proving |
+
+Generate (**always writes `VXPLNK02`** today):
 
 ```bash
 cargo run -p verifiedx-circuits --bin vfx_plonk_setup --release -- path/to/vfx_plonk_v0.params
 ```
 
-Load from nodes via existing `plonk_load_params` / `VFX_PLONK_PARAMS_PATH`. The file starts with magic `VXPLNK01` and deserializes to `VfxPlonkParamsBlob` (SRS + verifier key + public-input row index).
+Load from nodes via existing `plonk_load_params` / `VFX_PLONK_PARAMS_PATH`. Legacy **`VXPLNK01`** blobs still deserialize for verification only.
 
 ### Proving
 

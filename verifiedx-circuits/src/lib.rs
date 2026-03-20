@@ -11,5 +11,6 @@
 mod v0_pi_binding;
 
 pub use v0_pi_binding::{
-    hash_vfxpi1_to_fr, trusted_setup_v0, verify_vfxpi_v0, VfxPiBindingV0Circuit, VfxPlonkParamsBlob,
+    hash_vfxpi1_to_fr, prove_vfxpi_v0, trusted_setup_v0, verify_vfxpi_v0, VfxPiBindingV0Circuit,
+    VfxPlonkParamsBlob, VfxProveError, VfxVerifyError,
 };

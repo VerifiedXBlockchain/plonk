@@ -31,16 +31,22 @@ pub const ERR_NOT_IMPLEMENTED: i32 = -6;
 pub const G1_COMPRESSED_LEN: usize = 48;
 pub const FR_LEN: usize = 32;
 
-/// Bit 0: v0 PLONK verify available (`VXPLNK01` params loaded). Matches C# `PlonkNative.CapVerifyV1`.
+/// Bit 0: v0 PLONK verify available (`VXPLNK01` / `VXPLNK02` params loaded). Matches C# `PlonkNative.CapVerifyV1`.
 pub const PLONK_CAP_VERIFY_V1: u32 = 1;
 /// Bit 1: VFXPI1 layout parsing in `plonk_verify`.
 pub const PLONK_CAP_PARSE_PUBLIC_INPUTS_V1: u32 = 2;
+/// Bit 2: v0 proving available (`VXPLNK02` includes prover key). Matches C# `PlonkNative.CapProveV1`.
+pub const PLONK_CAP_PROVE_V1: u32 = 4;
 
 #[no_mangle]
 pub extern "C" fn plonk_capabilities() -> u32 {
     let mut c = PLONK_CAP_PARSE_PUBLIC_INPUTS_V1;
-    if VFX_PLONK_V0.lock().unwrap().is_some() {
+    let guard = VFX_PLONK_V0.lock().unwrap();
+    if let Some(ref blob) = *guard {
         c |= PLONK_CAP_VERIFY_V1;
+        if blob.prover_key.is_some() {
+            c |= PLONK_CAP_PROVE_V1;
+        }
     }
     c
 }
@@ -57,7 +63,9 @@ pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
     };
     match std::fs::read(path) {
         Ok(bytes) => {
-            if bytes.len() >= 8 && &bytes[..8] == b"VXPLNK01" {
+            let is_vfx_params = bytes.len() >= 8
+                && (&bytes[..8] == b"VXPLNK01" || &bytes[..8] == b"VXPLNK02");
+            if is_vfx_params {
                 match VfxPlonkParamsBlob::deserialize(&bytes) {
                     Ok(blob) => {
                         *VFX_PLONK_V0.lock().unwrap() = Some(blob);
@@ -272,6 +280,58 @@ pub extern "C" fn plonk_verify(
         };
     }
     ERR_NOT_IMPLEMENTED
+}
+
+/// Generate a v0 PLONK proof for `public_inputs` (full VFXPI1 blob). Requires **`VXPLNK02`** params with prover key.
+/// `proof_out_len` is input capacity / output written length. If buffer is too small, returns `ERR_PARAM` and sets
+/// `*proof_out_len` to the required byte length.
+#[no_mangle]
+pub extern "C" fn plonk_prove_v0(
+    circuit_type: u8,
+    public_inputs: *const u8,
+    public_inputs_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+) -> i32 {
+    if public_inputs.is_null() || proof_out_len.is_null() {
+        return ERR_NULL;
+    }
+    let pi = unsafe { std::slice::from_raw_parts(public_inputs, public_inputs_len) };
+    let parsed = match vfxpi1::parse_public_inputs(pi) {
+        Ok(c) => c,
+        Err(()) => return ERR_PARAM,
+    };
+    if circuit_type != parsed as u8 {
+        return ERR_PARAM;
+    }
+    let guard = VFX_PLONK_V0.lock().unwrap();
+    let blob = match guard.as_ref() {
+        Some(b) if b.prover_key.is_some() => b,
+        Some(_) => return ERR_NOT_IMPLEMENTED,
+        None => return ERR_NOT_IMPLEMENTED,
+    };
+    let proof_vec = match verifiedx_circuits::prove_vfxpi_v0(blob, pi) {
+        Ok(p) => p,
+        Err(_) => return ERR_CRYPTO,
+    };
+    if proof_out.is_null() {
+        unsafe {
+            *proof_out_len = proof_vec.len();
+        }
+        return ERR_PARAM;
+    }
+    let cap = unsafe { *proof_out_len };
+    if cap < proof_vec.len() {
+        unsafe {
+            *proof_out_len = proof_vec.len();
+        }
+        return ERR_PARAM;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(proof_vec.as_ptr(), proof_out, proof_vec.len());
+        *proof_out_len = proof_vec.len();
+    }
+    SUCCESS
 }
 
 #[cfg(test)]
