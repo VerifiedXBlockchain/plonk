@@ -1,9 +1,10 @@
 //! C ABI for VerifiedX privacy primitives (Phase 1).
-//! PLONK prove/verify are stubs until circuits land in Phase 4.
+//! `plonk_verify` validates `PlonkPublicInputsV1` (VFXPI1) layout; full PLONK verification waits on circuits + SRS (Phase 4+).
 
 mod merkle;
 mod pedersen;
 mod poseidon_hash;
+mod vfxpi1;
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -211,12 +212,28 @@ pub extern "C" fn nullifier_derive(
 
 #[no_mangle]
 pub extern "C" fn plonk_verify(
-    _circuit_type: u8,
-    _proof: *const u8,
-    _proof_len: usize,
-    _public_inputs: *const u8,
-    _public_inputs_len: usize,
+    circuit_type: u8,
+    proof: *const u8,
+    proof_len: usize,
+    public_inputs: *const u8,
+    public_inputs_len: usize,
 ) -> i32 {
+    if proof.is_null() || public_inputs.is_null() {
+        return ERR_NULL;
+    }
+    // Preserve legacy "stub" behavior for empty buffers (C# tests / no-op callers).
+    if proof_len == 0 || public_inputs_len == 0 {
+        return ERR_NOT_IMPLEMENTED;
+    }
+    let pi = unsafe { std::slice::from_raw_parts(public_inputs, public_inputs_len) };
+    let parsed = match vfxpi1::parse_public_inputs(pi) {
+        Ok(c) => c,
+        Err(()) => return ERR_PARAM,
+    };
+    if circuit_type != parsed as u8 {
+        return 0;
+    }
+    // PLONK cryptographic verification (SRS + circuits) — Phase 4+ in this workspace.
     ERR_NOT_IMPLEMENTED
 }
 

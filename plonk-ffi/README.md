@@ -34,4 +34,6 @@ cp target/release/libplonk_ffi.dylib /path/to/VerifiedX-Core/ReserveBlockCore/Pl
 
 ## ABI
 
-Exports match `PlonkNative.cs`: `pedersen_commit`, `pedersen_verify`, `pedersen_commitment_add` (homomorphic G1 add), `poseidon_hash`, `merkle_tree_*`, `nullifier_derive`, `plonk_load_params`, `plonk_verify` (stub).
+Exports match `PlonkNative.cs`: `pedersen_commit`, `pedersen_verify`, `pedersen_commitment_add` (homomorphic G1 add), `poseidon_hash`, `merkle_tree_*`, `nullifier_derive`, `plonk_load_params`, `plonk_capabilities`, `plonk_verify` (validates **VFXPI1** public-input layout; cryptographic verify still **Phase 4** until circuits ship — returns `ERR_NOT_IMPLEMENTED` after layout checks).
+
+VerifiedX **vBTC** shielded asset keys (`VBTC:{SmartContractUID}`) and PLONK public-input alignment: see **[VERIFIEDX_VBTC.md](./VERIFIEDX_VBTC.md)**.
