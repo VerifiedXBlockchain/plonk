@@ -1,0 +1,20 @@
+[package]
+name = "plonk_ffi"
+version = "0.1.0"
+edition = "2021"
+description = "C ABI for VerifiedX privacy primitives (Pedersen, plonk-hashing Poseidon, Merkle, nullifiers)"
+license = "MPL"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "plonk_ffi"
+
+[dependencies]
+ark-bls12-381 = { version = "0.3", features = ["curve"] }
+ark-ec = { version = "0.3", features = ["std"] }
+ark-ff = { version = "0.3", features = ["std"] }
+ark-serialize = { version = "0.3", features = ["derive"] }
+ark-std = { version = "0.3", features = ["std"] }
+once_cell = "1.19"
+rand = { version = "0.8", features = ["std_rng"] }
+plonk-hashing = { path = "../plonk-hashing" }

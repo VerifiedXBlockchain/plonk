@@ -1,0 +1,67 @@
+# Manual workflow: builds plonk_ffi for Windows, Linux, and macOS (artifacts per platform).
+
+name: Build Native Libraries (plonk_ffi)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: Build macOS dylib
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.83.0
+
+      - name: Build plonk_ffi for macOS
+        run: cargo build -p plonk_ffi --release
+
+      - name: Upload macOS dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: libplonk_ffi-macos
+          path: target/release/libplonk_ffi.dylib
+
+  build-linux:
+    name: Build Linux .so
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.83.0
+
+      - name: Build plonk_ffi for Linux
+        run: cargo build -p plonk_ffi --release
+
+      - name: Upload Linux .so
+        uses: actions/upload-artifact@v4
+        with:
+          name: libplonk_ffi-linux
+          path: target/release/libplonk_ffi.so
+
+  build-windows:
+    name: Build Windows DLL
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.83.0
+
+      - name: Build plonk_ffi for Windows
+        run: cargo build -p plonk_ffi --release
+
+      - name: Upload Windows DLL
+        uses: actions/upload-artifact@v4
+        with:
+          name: plonk_ffi-windows
+          path: target/release/plonk_ffi.dll

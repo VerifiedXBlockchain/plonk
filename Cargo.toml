@@ -30,6 +30,7 @@ resolver = "2"
 members = [
     "plonk-core",
     "plonk-hashing",
+    "plonk-ffi",
 ]
 
 [dependencies]

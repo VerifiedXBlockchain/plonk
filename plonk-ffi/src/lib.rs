@@ -1,0 +1,212 @@
+//! C ABI for VerifiedX privacy primitives (Phase 1).
+//! PLONK prove/verify are stubs until circuits land in Phase 4.
+
+mod merkle;
+mod pedersen;
+mod poseidon_hash;
+
+use std::ffi::CStr;
+use std::os::raw::c_char;
+use std::sync::Mutex;
+
+use once_cell::sync::Lazy;
+
+static PARAMS: Lazy<Mutex<Vec<u8>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static MERKLE: Lazy<Mutex<merkle::MerkleForest>> =
+    Lazy::new(|| Mutex::new(merkle::MerkleForest::new()));
+
+pub const SUCCESS: i32 = 0;
+pub const ERR_NULL: i32 = -1;
+pub const ERR_UTF8: i32 = -2;
+pub const ERR_CRYPTO: i32 = -4;
+pub const ERR_PARAM: i32 = -5;
+pub const ERR_NOT_IMPLEMENTED: i32 = -6;
+
+pub const G1_COMPRESSED_LEN: usize = 48;
+pub const FR_LEN: usize = 32;
+
+#[no_mangle]
+pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
+    if params_path.is_null() {
+        return ERR_NULL;
+    }
+    let s = unsafe { CStr::from_ptr(params_path) };
+    let path = match s.to_str() {
+        Ok(p) => p,
+        Err(_) => return ERR_UTF8,
+    };
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let mut g = PARAMS.lock().unwrap();
+            *g = bytes;
+            SUCCESS
+        }
+        Err(_) => ERR_CRYPTO,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn pedersen_commit(
+    amount_scaled: u64,
+    randomness: *const u8,
+    commitment_out: *mut u8,
+) -> i32 {
+    if randomness.is_null() || commitment_out.is_null() {
+        return ERR_NULL;
+    }
+    let r = unsafe { std::slice::from_raw_parts(randomness, 32) };
+    match pedersen::commit(amount_scaled, r) {
+        Ok(c) => {
+            unsafe {
+                std::ptr::copy_nonoverlapping(c.as_ptr(), commitment_out, G1_COMPRESSED_LEN);
+            }
+            SUCCESS
+        }
+        Err(_) => ERR_CRYPTO,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn pedersen_verify(
+    commitment: *const u8,
+    amount_scaled: u64,
+    randomness: *const u8,
+) -> i32 {
+    if commitment.is_null() || randomness.is_null() {
+        return ERR_NULL;
+    }
+    let c = unsafe { std::slice::from_raw_parts(commitment, G1_COMPRESSED_LEN) };
+    let r = unsafe { std::slice::from_raw_parts(randomness, 32) };
+    match pedersen::verify(c, amount_scaled, r) {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(_) => -1,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn poseidon_hash(
+    inputs: *const u8,
+    inputs_len: usize,
+    hash_out: *mut u8,
+) -> i32 {
+    if inputs.is_null() || hash_out.is_null() {
+        return ERR_NULL;
+    }
+    let data = unsafe { std::slice::from_raw_parts(inputs, inputs_len) };
+    match poseidon_hash::hash_bytes(data) {
+        Ok(h) => {
+            unsafe {
+                std::ptr::copy_nonoverlapping(h.as_ptr(), hash_out, FR_LEN);
+            }
+            SUCCESS
+        }
+        Err(_) => ERR_CRYPTO,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn merkle_tree_add(
+    tree_id: *const c_char,
+    commitment: *const u8,
+    position_out: *mut u64,
+) -> i32 {
+    if tree_id.is_null() || commitment.is_null() || position_out.is_null() {
+        return ERR_NULL;
+    }
+    let id = unsafe { CStr::from_ptr(tree_id) };
+    let id = match id.to_str() {
+        Ok(s) => s.to_string(),
+        Err(_) => return ERR_UTF8,
+    };
+    let c = unsafe { std::slice::from_raw_parts(commitment, G1_COMPRESSED_LEN) };
+    let mut g = MERKLE.lock().unwrap();
+    let pos = g.add_leaf(&id, c);
+    unsafe {
+        *position_out = pos;
+    }
+    SUCCESS
+}
+
+#[no_mangle]
+pub extern "C" fn merkle_tree_prove(
+    tree_id: *const c_char,
+    position: u64,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    root_out: *mut u8,
+) -> i32 {
+    if tree_id.is_null() || proof_out.is_null() || proof_out_len.is_null() || root_out.is_null() {
+        return ERR_NULL;
+    }
+    let id = unsafe { CStr::from_ptr(tree_id) };
+    let id = match id.to_str() {
+        Ok(s) => s,
+        Err(_) => return ERR_UTF8,
+    };
+    let g = MERKLE.lock().unwrap();
+    let (proof, root) = match g.prove(id, position) {
+        Some(p) => p,
+        None => return ERR_PARAM,
+    };
+    let cap = unsafe { *proof_out_len };
+    if cap < proof.len() {
+        unsafe {
+            *proof_out_len = proof.len();
+        }
+        return ERR_PARAM;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(proof.as_ptr(), proof_out, proof.len());
+        *proof_out_len = proof.len();
+        std::ptr::copy_nonoverlapping(root.as_ptr(), root_out, FR_LEN);
+    }
+    SUCCESS
+}
+
+#[no_mangle]
+pub extern "C" fn nullifier_derive(
+    viewing_key: *const u8,
+    commitment: *const u8,
+    tree_position: u64,
+    nullifier_out: *mut u8,
+) -> i32 {
+    if viewing_key.is_null() || commitment.is_null() || nullifier_out.is_null() {
+        return ERR_NULL;
+    }
+    let vk = unsafe { std::slice::from_raw_parts(viewing_key, 32) };
+    let c = unsafe { std::slice::from_raw_parts(commitment, G1_COMPRESSED_LEN) };
+    match poseidon_hash::nullifier_from_parts(vk, c, tree_position) {
+        Ok(n) => {
+            unsafe {
+                std::ptr::copy_nonoverlapping(n.as_ptr(), nullifier_out, FR_LEN);
+            }
+            SUCCESS
+        }
+        Err(_) => ERR_CRYPTO,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn plonk_verify(
+    _circuit_type: u8,
+    _proof: *const u8,
+    _proof_len: usize,
+    _public_inputs: *const u8,
+    _public_inputs_len: usize,
+) -> i32 {
+    ERR_NOT_IMPLEMENTED
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pedersen_roundtrip() {
+        let r = [7u8; 32];
+        let mut c = [0u8; G1_COMPRESSED_LEN];
+        assert_eq!(pedersen_commit(12345, r.as_ptr(), c.as_mut_ptr()), SUCCESS);
+        assert_eq!(pedersen_verify(c.as_ptr(), 12345, r.as_ptr()), 1);
+    }
+}

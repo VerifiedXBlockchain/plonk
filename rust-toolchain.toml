@@ -1,0 +1,3 @@
+[toolchain]
+# arkworks / plonk build; pest 2.8+ needs rustc ≥ 1.83
+channel = "1.83.0"
