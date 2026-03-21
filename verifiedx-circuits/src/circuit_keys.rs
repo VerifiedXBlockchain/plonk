@@ -19,7 +19,7 @@ use crate::circuits::transfer::TransferCircuit;
 use crate::circuits::unshield::UnshieldCircuit;
 
 type PC = KZG10<Bls12_381>;
-type UniversalParams = <PC as plonk_core::commitment::HomomorphicCommitment<Fr>>::UniversalParams;
+type UniversalParams = <PC as ark_poly_commit::PolynomialCommitment<Fr, ark_poly::univariate::DensePolynomial<Fr>>>::UniversalParams;
 
 /// Maximum circuit size across all circuit types (Transfer is largest at 2^15).
 pub const MAX_CIRCUIT_SIZE: usize = 1 << 15;
@@ -51,19 +51,23 @@ pub fn compile_all_circuits(
 ) -> Result<CircuitKeys, Error> {
     // Shield
     let mut shield = ShieldCircuit::<Fr>::default();
-    let (shield_pk, (shield_vk, shield_pi_pos)) = shield.compile::<PC>(pp)?;
+    let (shield_pk, (shield_vk, shield_pi_pos)) =
+        <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::compile::<PC>(&mut shield, pp)?;
 
     // Transfer
     let mut transfer = TransferCircuit::<Fr>::default();
-    let (transfer_pk, (transfer_vk, transfer_pi_pos)) = transfer.compile::<PC>(pp)?;
+    let (transfer_pk, (transfer_vk, transfer_pi_pos)) =
+        <TransferCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::compile::<PC>(&mut transfer, pp)?;
 
     // Unshield
     let mut unshield = UnshieldCircuit::<Fr>::default();
-    let (unshield_pk, (unshield_vk, unshield_pi_pos)) = unshield.compile::<PC>(pp)?;
+    let (unshield_pk, (unshield_vk, unshield_pi_pos)) =
+        <UnshieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::compile::<PC>(&mut unshield, pp)?;
 
     // Fee
     let mut fee = FeeCircuit::<Fr>::default();
-    let (fee_pk, (fee_vk, fee_pi_pos)) = fee.compile::<PC>(pp)?;
+    let (fee_pk, (fee_vk, fee_pi_pos)) =
+        <FeeCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::compile::<PC>(&mut fee, pp)?;
 
     Ok(CircuitKeys {
         shield_pk: if include_prover_keys { Some(shield_pk) } else { None },
@@ -96,7 +100,7 @@ pub fn prove_shield(
         pi_pos: Vec::new(),
     };
 
-    let (proof, pi) = circuit.gen_proof::<PC>(pp, pk, b"VFX_SHIELD_V1")?;
+    let (proof, pi) = <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(&mut circuit, pp, pk, b"VFX_SHIELD_V1")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -129,7 +133,7 @@ pub fn prove_transfer(
     pk: ProverKey<Fr>,
     circuit: &mut TransferCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = circuit.gen_proof::<PC>(pp, pk, b"VFX_TRANSFER_V1")?;
+    let (proof, pi) = <TransferCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_TRANSFER_V1")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -162,7 +166,7 @@ pub fn prove_unshield(
     pk: ProverKey<Fr>,
     circuit: &mut UnshieldCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = circuit.gen_proof::<PC>(pp, pk, b"VFX_UNSHIELD_V1")?;
+    let (proof, pi) = <UnshieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_UNSHIELD_V1")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -195,7 +199,7 @@ pub fn prove_fee(
     pk: ProverKey<Fr>,
     circuit: &mut FeeCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = circuit.gen_proof::<PC>(pp, pk, b"VFX_FEE_V1")?;
+    let (proof, pi) = <FeeCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_FEE_V1")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;

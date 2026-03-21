@@ -42,6 +42,7 @@ pub fn trusted_setup_v1(
     include_prover_keys: bool,
 ) -> Result<circuit_keys::ParamsBlobV1, Box<dyn std::error::Error>> {
     use ark_bls12_381::Bls12_381;
+    use ark_poly_commit::PolynomialCommitment;
     use ark_serialize::CanonicalSerialize;
     use plonk_core::commitment::KZG10;
     use rand::SeedableRng;
@@ -51,7 +52,7 @@ pub fn trusted_setup_v1(
     // Generate universal params large enough for the biggest circuit (Transfer at 2^15)
     // Deterministic seed for reproducible setup
     let mut rng = rand::rngs::StdRng::seed_from_u64(0x5646585F504C4E4B); // "VFX_PLNK" as u64
-    let pp = <PC as plonk_core::commitment::HomomorphicCommitment<ark_bls12_381::Fr>>::setup(
+    let pp = PC::setup(
         circuit_keys::MAX_CIRCUIT_SIZE,
         None,
         &mut rng,

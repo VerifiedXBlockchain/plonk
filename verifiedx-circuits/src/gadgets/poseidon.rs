@@ -8,7 +8,8 @@ use ark_ec::models::TEModelParameters;
 use ark_ff::PrimeField;
 use plonk_core::constraint_system::StandardComposer;
 use plonk_core::constraint_system::Variable;
-use plonk_hashing::poseidon::zprize_constraints::PoseidonRef;
+use plonk_hashing::poseidon::zprize_constraints::{PoseidonZZRef, PlonkSpecZZ};
+use plonk_hashing::poseidon::constants::PoseidonConstants;
 
 /// Width 3 = 2 inputs + 1 capacity (suitable for binary Merkle tree).
 const WIDTH_3: usize = 3;
@@ -27,11 +28,11 @@ where
     F: PrimeField,
     P: TEModelParameters<BaseField = F>,
 {
-    let mut poseidon = PoseidonRef::<
+    let mut poseidon = PoseidonZZRef::<
         _,
-        plonk_hashing::poseidon::zprize_constraints::PlonkSpec<WIDTH_3>,
+        PlonkSpecZZ<F>,
         WIDTH_3,
-    >::new(composer);
+    >::new(composer, PoseidonConstants::generate::<WIDTH_3>());
     poseidon.input(left).expect("poseidon input left");
     poseidon.input(right).expect("poseidon input right");
     poseidon.output_hash(composer)
@@ -51,11 +52,11 @@ where
     P: TEModelParameters<BaseField = F>,
 {
     let zero = composer.zero_var();
-    let mut poseidon = PoseidonRef::<
+    let mut poseidon = PoseidonZZRef::<
         _,
-        plonk_hashing::poseidon::zprize_constraints::PlonkSpec<WIDTH_5>,
+        PlonkSpecZZ<F>,
         WIDTH_5,
-    >::new(composer);
+    >::new(composer, PoseidonConstants::generate::<WIDTH_5>());
     poseidon.input(a).expect("poseidon input a");
     poseidon.input(b).expect("poseidon input b");
     poseidon.input(c).expect("poseidon input c");
@@ -77,11 +78,11 @@ where
     F: PrimeField,
     P: TEModelParameters<BaseField = F>,
 {
-    let mut poseidon = PoseidonRef::<
+    let mut poseidon = PoseidonZZRef::<
         _,
-        plonk_hashing::poseidon::zprize_constraints::PlonkSpec<WIDTH_5>,
+        PlonkSpecZZ<F>,
         WIDTH_5,
-    >::new(composer);
+    >::new(composer, PoseidonConstants::generate::<WIDTH_5>());
     poseidon.input(a).expect("poseidon input a");
     poseidon.input(b).expect("poseidon input b");
     poseidon.input(c).expect("poseidon input c");

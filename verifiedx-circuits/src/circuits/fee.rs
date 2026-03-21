@@ -102,19 +102,19 @@ where
 
         // Public inputs
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(root_var, F::zero(), F::zero());
+        composer.constrain_to_constant(root_var, F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(in_nullifier, F::zero(), F::zero());
+        composer.constrain_to_constant(in_nullifier, F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(ch_note_hash, F::zero(), F::zero());
+        composer.constrain_to_constant(ch_note_hash, F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(fee_var, F::zero(), F::zero());
+        composer.constrain_to_constant(fee_var, F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         self.pi_pos = pi_positions;

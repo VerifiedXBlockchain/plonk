@@ -188,32 +188,32 @@ where
         // === Public inputs (order matches PlonkPublicInputsV1) ===
         // PI[0] = merkle_root
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(root_var, F::zero(), F::zero());
+        composer.constrain_to_constant(root_var, F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         // PI[1] = nullifier_0
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(nullifier_vars[0], F::zero(), F::zero());
+        composer.constrain_to_constant(nullifier_vars[0], F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         // PI[2] = nullifier_1
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(nullifier_vars[1], F::zero(), F::zero());
+        composer.constrain_to_constant(nullifier_vars[1], F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         // PI[3] = output_note_hash_0
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(output_note_hash_vars[0], F::zero(), F::zero());
+        composer.constrain_to_constant(output_note_hash_vars[0], F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         // PI[4] = output_note_hash_1
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(output_note_hash_vars[1], F::zero(), F::zero());
+        composer.constrain_to_constant(output_note_hash_vars[1], F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         // PI[5] = fee
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(fee_var, F::zero(), F::zero());
+        composer.constrain_to_constant(fee_var, F::zero(), Some(F::zero()));
         pi_positions.push(n);
 
         self.pi_pos = pi_positions;

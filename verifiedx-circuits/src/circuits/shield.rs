@@ -67,11 +67,11 @@ where
         // Use constrain_to_constant with value=0. During verification,
         // the actual public input value is added to the PI polynomial.
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(amount_var, F::zero(), F::zero());
+        composer.constrain_to_constant(amount_var, F::zero(), Some(F::zero()));
         let pi0 = n;
 
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(computed_note_hash, F::zero(), F::zero());
+        composer.constrain_to_constant(computed_note_hash, F::zero(), Some(F::zero()));
         let pi1 = n;
 
         self.pi_pos = vec![pi0, pi1];
