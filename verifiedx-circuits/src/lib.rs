@@ -1,16 +1,31 @@
-//! VerifiedX PLONK circuits on **BLS12-381** / **KZG10** (same stack as `plonk-core` tests).
+//! VerifiedX privacy circuits for the PLONK proving system.
 //!
-//! ## v0 — PI digest binding (production pipeline, not full privacy yet)
+//! This crate provides:
+//! - **Gadgets**: Reusable in-circuit building blocks (Poseidon hash,
+//!   Merkle path verification, note hash, nullifier derivation, range proofs)
+//! - **Circuits**: Complete privacy circuits implementing the `Circuit` trait
+//!   (Shield, Transfer, Unshield, Fee)
 //!
-//! The first circuit proves consistency with a single public field element
-//! `H = hash(VFXPI1_bytes)` where `hash` is **SHA-256** reduced into `Fr`
-//! (`ark_ff::PrimeField::from_le_bytes_mod_order` on the 32-byte digest).
-//! This **does not** enforce Pedersen balances, Merkle paths, or spending keys — it only
-//! wires end-to-end prove/verify + FFI. Replace with real constraints incrementally.
+//! # Architecture
+//!
+//! The circuits use a Poseidon note hash as the Merkle leaf to bind
+//! amounts to commitments in-circuit, preventing inflation attacks.
+//! G1 Pedersen commitments remain for external verification and
+//! homomorphic auditing.
+//!
+//! ```text
+//! note_hash = Poseidon(amount_scaled, randomness)   // Merkle leaf
+//! nullifier = Poseidon(viewing_key, note_hash, pos) // Spend authorization
+//! ```
 
-mod v0_pi_binding;
+pub mod gadgets;
+pub mod circuits;
+pub mod v0_pi_binding;
 
-pub use v0_pi_binding::{
-    hash_vfxpi1_to_fr, prove_vfxpi_v0, trusted_setup_v0, verify_vfxpi_v0, VfxPiBindingV0Circuit,
-    VfxPlonkParamsBlob, VfxProveError, VfxVerifyError,
-};
+/// Amount scaling factor: 10^18 (matches C# `AmountConverter.SCALING_FACTOR`).
+pub const SCALING_FACTOR: u128 = 1_000_000_000_000_000_000;
+
+/// Scale a decimal amount to a circuit-ready integer.
+pub fn scale_amount(amount_decimal: f64) -> u128 {
+    (amount_decimal * SCALING_FACTOR as f64) as u128
+}

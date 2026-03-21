@@ -7,6 +7,7 @@ license = "MPL"
 
 [dependencies]
 plonk-core = { path = "../plonk-core" }
+plonk-hashing = { path = "../plonk-hashing" }
 ark-bls12-381 = { version = "0.3", features = ["curve"] }
 ark-ec = { version = "0.3", features = ["std"] }
 ark-ed-on-bls12-381 = { version = "0.3" }
