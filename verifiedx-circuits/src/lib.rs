@@ -20,6 +20,7 @@
 
 pub mod gadgets;
 pub mod circuits;
+pub mod circuit_keys;
 pub mod v0_pi_binding;
 
 /// Amount scaling factor: 10^18 (matches C# `AmountConverter.SCALING_FACTOR`).

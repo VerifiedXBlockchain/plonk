@@ -2,6 +2,7 @@
 //! `plonk_verify` validates `PlonkPublicInputsV1` (VFXPI1), then — if `VXPLNK01` params were loaded — runs **v0** PLONK verify
 //! (`verifiedx-circuits`: SHA-256 digest binding to the PI blob; not full Pedersen/Merkle/nullifier logic yet).
 
+mod circuits_v1;
 mod merkle;
 mod pedersen;
 mod poseidon_hash;
@@ -37,6 +38,10 @@ pub const PLONK_CAP_VERIFY_V1: u32 = 1;
 pub const PLONK_CAP_PARSE_PUBLIC_INPUTS_V1: u32 = 2;
 /// Bit 2: v0 proving available (`VXPLNK02` includes prover key). Matches C# `PlonkNative.CapProveV1`.
 pub const PLONK_CAP_PROVE_V1: u32 = 4;
+/// Bit 3: v1 real circuits loaded (`VXPLNK03` params).
+pub const PLONK_CAP_V1_CIRCUITS: u32 = 8;
+/// Bit 4: v1 prover keys available.
+pub const PLONK_CAP_V1_PROVE: u32 = 16;
 
 #[no_mangle]
 pub extern "C" fn plonk_capabilities() -> u32 {
@@ -46,6 +51,14 @@ pub extern "C" fn plonk_capabilities() -> u32 {
         c |= PLONK_CAP_VERIFY_V1;
         if blob.prover_key.is_some() {
             c |= PLONK_CAP_PROVE_V1;
+        }
+    }
+    drop(guard);
+    // v1 real circuit capabilities
+    if circuits_v1::is_v1_loaded() {
+        c |= PLONK_CAP_V1_CIRCUITS;
+        if circuits_v1::has_v1_prover_keys() {
+            c |= PLONK_CAP_V1_PROVE;
         }
     }
     c
@@ -63,6 +76,17 @@ pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
     };
     match std::fs::read(path) {
         Ok(bytes) => {
+            // Try v1 (VXPLNK03) first
+            if bytes.len() >= 8 && &bytes[..8] == b"VXPLNK03" {
+                match circuits_v1::try_load_v1_params(&bytes) {
+                    Ok(()) => {
+                        *PARAMS.lock().unwrap() = bytes;
+                        return SUCCESS;
+                    }
+                    Err(_) => return ERR_CRYPTO,
+                }
+            }
+            // Then try v0 (VXPLNK01 / VXPLNK02)
             let is_vfx_params = bytes.len() >= 8
                 && (&bytes[..8] == b"VXPLNK01" || &bytes[..8] == b"VXPLNK02");
             if is_vfx_params {
@@ -249,6 +273,37 @@ pub extern "C" fn nullifier_derive(
     }
 }
 
+/// Derive a nullifier using note_hash (v1 circuit-compatible).
+///
+/// `nullifier = Poseidon(viewing_key, note_hash, position)`
+///
+/// This matches the in-circuit nullifier derivation used by the v1 circuits.
+/// The `note_hash` parameter should be the output of `poseidon_note_hash()`.
+///
+/// # Safety
+/// `viewing_key` and `note_hash` must point to 32 bytes each.
+/// `nullifier_out` must point to 32 writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn nullifier_derive_v1(
+    viewing_key: *const u8,
+    note_hash: *const u8,
+    tree_position: u64,
+    nullifier_out: *mut u8,
+) -> i32 {
+    if viewing_key.is_null() || note_hash.is_null() || nullifier_out.is_null() {
+        return ERR_NULL;
+    }
+    let vk = std::slice::from_raw_parts(viewing_key, FR_LEN);
+    let nh = std::slice::from_raw_parts(note_hash, FR_LEN);
+    match poseidon_hash::nullifier_from_note_hash(vk, nh, tree_position) {
+        Ok(n) => {
+            std::ptr::copy_nonoverlapping(n.as_ptr(), nullifier_out, FR_LEN);
+            SUCCESS
+        }
+        Err(_) => ERR_CRYPTO,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn plonk_verify(
     circuit_type: u8,
@@ -264,17 +319,35 @@ pub extern "C" fn plonk_verify(
     if proof_len == 0 || public_inputs_len == 0 {
         return ERR_NOT_IMPLEMENTED;
     }
-    let pi = unsafe { std::slice::from_raw_parts(public_inputs, public_inputs_len) };
-    let parsed = match vfxpi1::parse_public_inputs(pi) {
+    let pi_slice = unsafe { std::slice::from_raw_parts(public_inputs, public_inputs_len) };
+    let proof_slice = unsafe { std::slice::from_raw_parts(proof, proof_len) };
+
+    // Try v1 real circuits first (if loaded)
+    if circuits_v1::is_v1_loaded() {
+        let result = match circuit_type {
+            1 => circuits_v1::ffi_verify_shield(proof_slice, pi_slice),
+            0 => circuits_v1::ffi_verify_transfer(proof_slice, pi_slice),
+            2 => circuits_v1::ffi_verify_unshield(proof_slice, pi_slice),
+            3 => circuits_v1::ffi_verify_fee(proof_slice, pi_slice),
+            _ => return ERR_PARAM,
+        };
+        return match result {
+            Ok(true) => 1,
+            Ok(false) => 0,
+            Err(e) => e,
+        };
+    }
+
+    // Fall back to v0 digest-binding circuit
+    let parsed = match vfxpi1::parse_public_inputs(pi_slice) {
         Ok(c) => c,
         Err(()) => return ERR_PARAM,
     };
     if circuit_type != parsed as u8 {
         return 0;
     }
-    let proof_slice = unsafe { std::slice::from_raw_parts(proof, proof_len) };
     if let Some(ref blob) = *VFX_PLONK_V0.lock().unwrap() {
-        return match verifiedx_circuits::verify_vfxpi_v0(blob, proof_slice, pi) {
+        return match verifiedx_circuits::verify_vfxpi_v0(blob, proof_slice, pi_slice) {
             Ok(()) => 1,
             Err(_) => 0,
         };
@@ -331,6 +404,59 @@ pub extern "C" fn plonk_prove_v0(
         std::ptr::copy_nonoverlapping(proof_vec.as_ptr(), proof_out, proof_vec.len());
         *proof_out_len = proof_vec.len();
     }
+    SUCCESS
+}
+
+/// Generate a Shield circuit proof (v1). Requires `VXPLNK03` params with prover keys.
+///
+/// # Safety
+/// `randomness` must point to 32 bytes. `proof_out` must point to `*proof_out_len` writable bytes.
+/// `pi_out` must point to `*pi_out_len` writable bytes.
+/// On success, `*proof_out_len` and `*pi_out_len` are set to the actual written lengths.
+/// If buffers are too small, returns `ERR_PARAM` and sets the required lengths.
+#[no_mangle]
+pub unsafe extern "C" fn plonk_prove_shield(
+    amount_scaled: u64,
+    randomness: *const u8,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+) -> i32 {
+    if randomness.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
+        return ERR_NULL;
+    }
+
+    let rand_slice = std::slice::from_raw_parts(randomness, 32);
+    let randomness_fr = match ark_serialize::CanonicalDeserialize::deserialize(rand_slice) {
+        Ok(f) => f,
+        Err(_) => return ERR_CRYPTO,
+    };
+
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_shield(amount_scaled, randomness_fr) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    // Write proof
+    if proof_out.is_null() || *proof_out_len < proof_bytes.len() {
+        *proof_out_len = proof_bytes.len();
+        if pi_out.is_null() || *pi_out_len < pi_bytes.len() {
+            *pi_out_len = pi_bytes.len();
+        }
+        return ERR_PARAM;
+    }
+    std::ptr::copy_nonoverlapping(proof_bytes.as_ptr(), proof_out, proof_bytes.len());
+    *proof_out_len = proof_bytes.len();
+
+    // Write PI
+    if pi_out.is_null() || *pi_out_len < pi_bytes.len() {
+        *pi_out_len = pi_bytes.len();
+        return ERR_PARAM;
+    }
+    std::ptr::copy_nonoverlapping(pi_bytes.as_ptr(), pi_out, pi_bytes.len());
+    *pi_out_len = pi_bytes.len();
+
     SUCCESS
 }
 
