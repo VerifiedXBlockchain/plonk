@@ -438,10 +438,273 @@ pub unsafe extern "C" fn plonk_prove_shield(
         Err(e) => return e,
     };
 
-    // Write proof
+    write_proof_and_pi(proof_out, proof_out_len, pi_out, pi_out_len, &proof_bytes, &pi_bytes)
+}
+
+/// Generate a Transfer circuit proof (v1, 2-in/2-out).
+///
+/// # Wire format for `witness_data`:
+/// For each of 2 inputs (sequentially):
+///   - amount_scaled: u64 LE (8 bytes)
+///   - randomness: Fr LE (32 bytes)
+///   - viewing_key: Fr LE (32 bytes)
+///   - position: u64 LE (8 bytes)
+///   - merkle_path: 32 × Fr LE (32×32 = 1024 bytes)
+///   - merkle_indices: 32 × Fr LE (1024 bytes)
+/// Then 2 outputs:
+///   - amount_scaled: u64 LE (8 bytes)
+///   - randomness: Fr LE (32 bytes)
+/// Then:
+///   - fee_scaled: u64 LE (8 bytes)
+///   - merkle_root: Fr LE (32 bytes)
+///
+/// Total = 2×2128 + 2×40 + 8 + 32 = 4384 bytes
+#[no_mangle]
+pub unsafe extern "C" fn plonk_prove_transfer(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+) -> i32 {
+    if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
+        return ERR_NULL;
+    }
+
+    let data = std::slice::from_raw_parts(witness_data, witness_data_len);
+
+    let expected_len = 2 * circuits_v1::TRANSFER_INPUT_SIZE + 2 * 40 + 8 + 32;
+    if data.len() < expected_len {
+        return ERR_PARAM;
+    }
+
+    use verifiedx_circuits::circuits::transfer::{TransferCircuit, TransferInput, TransferOutput};
+    use ark_bls12_381::Fr;
+
+    // Read 2 inputs
+    let input0 = match circuits_v1::read_transfer_input(&data[0..circuits_v1::TRANSFER_INPUT_SIZE]) {
+        Ok(i) => i,
+        Err(e) => return e,
+    };
+    let input1 = match circuits_v1::read_transfer_input(&data[circuits_v1::TRANSFER_INPUT_SIZE..2*circuits_v1::TRANSFER_INPUT_SIZE]) {
+        Ok(i) => i,
+        Err(e) => return e,
+    };
+
+    let mut cursor = 2 * circuits_v1::TRANSFER_INPUT_SIZE;
+
+    // Read 2 outputs (amount u64 LE + randomness Fr)
+    let out0_amount = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
+    let out0_rand = match circuits_v1::fr_from_bytes(&data[cursor+8..cursor+40]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    cursor += 40;
+    let out1_amount = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
+    let out1_rand = match circuits_v1::fr_from_bytes(&data[cursor+8..cursor+40]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    cursor += 40;
+
+    let fee = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
+    cursor += 8;
+    let merkle_root = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    let mut circuit = TransferCircuit {
+        inputs: [input0, input1],
+        outputs: [
+            TransferOutput { amount_scaled: Fr::from(out0_amount), randomness: out0_rand },
+            TransferOutput { amount_scaled: Fr::from(out1_amount), randomness: out1_rand },
+        ],
+        fee_scaled: Fr::from(fee),
+        merkle_root,
+        pi_pos: Vec::new(),
+    };
+
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_transfer(&mut circuit) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    write_proof_and_pi(proof_out, proof_out_len, pi_out, pi_out_len, &proof_bytes, &pi_bytes)
+}
+
+/// Generate an Unshield circuit proof (v1).
+///
+/// # Wire format for `witness_data`:
+/// 2 inputs (same format as Transfer input, 2×2128 bytes)
+/// Then:
+///   - transparent_amount_scaled: u64 LE (8 bytes)
+///   - change_amount_scaled: u64 LE (8 bytes)
+///   - change_randomness: Fr LE (32 bytes)
+///   - fee_scaled: u64 LE (8 bytes)
+///   - merkle_root: Fr LE (32 bytes)
+///
+/// Total = 2×2128 + 88 = 4344 bytes
+#[no_mangle]
+pub unsafe extern "C" fn plonk_prove_unshield(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+) -> i32 {
+    if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
+        return ERR_NULL;
+    }
+
+    let data = std::slice::from_raw_parts(witness_data, witness_data_len);
+
+    let expected_len = 2 * circuits_v1::TRANSFER_INPUT_SIZE + 88;
+    if data.len() < expected_len {
+        return ERR_PARAM;
+    }
+
+    use verifiedx_circuits::circuits::unshield::UnshieldCircuit;
+    use ark_bls12_381::Fr;
+
+    let input0 = match circuits_v1::read_transfer_input(&data[0..circuits_v1::TRANSFER_INPUT_SIZE]) {
+        Ok(i) => i,
+        Err(e) => return e,
+    };
+    let input1 = match circuits_v1::read_transfer_input(&data[circuits_v1::TRANSFER_INPUT_SIZE..2*circuits_v1::TRANSFER_INPUT_SIZE]) {
+        Ok(i) => i,
+        Err(e) => return e,
+    };
+
+    let mut cursor = 2 * circuits_v1::TRANSFER_INPUT_SIZE;
+
+    let transparent_amount = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
+    cursor += 8;
+    let change_amount = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
+    cursor += 8;
+    let change_rand = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    cursor += 32;
+    let fee = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
+    cursor += 8;
+    let merkle_root = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    let mut circuit = UnshieldCircuit {
+        inputs: [input0, input1],
+        transparent_amount_scaled: Fr::from(transparent_amount),
+        change_amount_scaled: Fr::from(change_amount),
+        change_randomness: change_rand,
+        fee_scaled: Fr::from(fee),
+        merkle_root,
+        pi_pos: Vec::new(),
+    };
+
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_unshield(&mut circuit) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    write_proof_and_pi(proof_out, proof_out_len, pi_out, pi_out_len, &proof_bytes, &pi_bytes)
+}
+
+/// Generate a Fee circuit proof (v1, 1-in/1-out).
+///
+/// # Wire format for `witness_data`:
+/// 1 input (same format as Transfer input, 2128 bytes)
+/// Then:
+///   - change_amount_scaled: u64 LE (8 bytes)
+///   - change_randomness: Fr LE (32 bytes)
+///   - fee_scaled: u64 LE (8 bytes)
+///   - merkle_root: Fr LE (32 bytes)
+///
+/// Total = 2128 + 80 = 2208 bytes
+#[no_mangle]
+pub unsafe extern "C" fn plonk_prove_fee(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+) -> i32 {
+    if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
+        return ERR_NULL;
+    }
+
+    let data = std::slice::from_raw_parts(witness_data, witness_data_len);
+
+    let expected_len = circuits_v1::TRANSFER_INPUT_SIZE + 80;
+    if data.len() < expected_len {
+        return ERR_PARAM;
+    }
+
+    use verifiedx_circuits::circuits::fee::FeeCircuit;
+    use verifiedx_circuits::gadgets::merkle::TREE_DEPTH;
+    use ark_bls12_381::Fr;
+
+    // Read input (reuse transfer_input reader since format is the same)
+    let input = match circuits_v1::read_transfer_input(&data[0..circuits_v1::TRANSFER_INPUT_SIZE]) {
+        Ok(i) => i,
+        Err(e) => return e,
+    };
+
+    let mut cursor = circuits_v1::TRANSFER_INPUT_SIZE;
+
+    let change_amount = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
+    cursor += 8;
+    let change_rand = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    cursor += 32;
+    let fee = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
+    cursor += 8;
+    let merkle_root = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+
+    let mut circuit = FeeCircuit {
+        input_amount_scaled: input.amount_scaled,
+        input_randomness: input.randomness,
+        input_viewing_key: input.viewing_key,
+        input_position: input.position,
+        input_merkle_path: input.merkle_path,
+        input_merkle_indices: input.merkle_indices,
+        change_amount_scaled: Fr::from(change_amount),
+        change_randomness: change_rand,
+        fee_scaled: Fr::from(fee),
+        merkle_root,
+        pi_pos: Vec::new(),
+    };
+
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_fee(&mut circuit) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+
+    write_proof_and_pi(proof_out, proof_out_len, pi_out, pi_out_len, &proof_bytes, &pi_bytes)
+}
+
+/// Helper: write proof + pi bytes to output buffers with length checking.
+unsafe fn write_proof_and_pi(
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+    proof_bytes: &[u8],
+    pi_bytes: &[u8],
+) -> i32 {
     if proof_out.is_null() || *proof_out_len < proof_bytes.len() {
         *proof_out_len = proof_bytes.len();
-        if pi_out.is_null() || *pi_out_len < pi_bytes.len() {
+        if !pi_out.is_null() {
             *pi_out_len = pi_bytes.len();
         }
         return ERR_PARAM;
@@ -449,7 +712,6 @@ pub unsafe extern "C" fn plonk_prove_shield(
     std::ptr::copy_nonoverlapping(proof_bytes.as_ptr(), proof_out, proof_bytes.len());
     *proof_out_len = proof_bytes.len();
 
-    // Write PI
     if pi_out.is_null() || *pi_out_len < pi_bytes.len() {
         *pi_out_len = pi_bytes.len();
         return ERR_PARAM;

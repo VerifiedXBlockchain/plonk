@@ -125,6 +125,16 @@ pub fn ffi_verify_shield(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i3
 
 // ─── Transfer FFI helpers ──────────────────────────────────────────
 
+/// Prove a Transfer circuit.
+pub fn ffi_prove_transfer(circuit: &mut TransferCircuit<Fr>) -> Result<(Vec<u8>, Vec<u8>), i32> {
+    let guard = V1_STATE.lock().unwrap();
+    let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
+    let pk = state.transfer_pk.clone().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
+
+    circuit_keys::prove_transfer(&state.pp, pk, circuit)
+        .map_err(|_| crate::ERR_CRYPTO)
+}
+
 /// Verify a Transfer circuit proof.
 pub fn ffi_verify_transfer(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> {
     let guard = V1_STATE.lock().unwrap();
@@ -135,6 +145,16 @@ pub fn ffi_verify_transfer(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, 
 }
 
 // ─── Unshield FFI helpers ──────────────────────────────────────────
+
+/// Prove an Unshield circuit.
+pub fn ffi_prove_unshield(circuit: &mut UnshieldCircuit<Fr>) -> Result<(Vec<u8>, Vec<u8>), i32> {
+    let guard = V1_STATE.lock().unwrap();
+    let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
+    let pk = state.unshield_pk.clone().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
+
+    circuit_keys::prove_unshield(&state.pp, pk, circuit)
+        .map_err(|_| crate::ERR_CRYPTO)
+}
 
 /// Verify an Unshield circuit proof.
 pub fn ffi_verify_unshield(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> {
@@ -147,6 +167,16 @@ pub fn ffi_verify_unshield(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, 
 
 // ─── Fee FFI helpers ───────────────────────────────────────────────
 
+/// Prove a Fee circuit.
+pub fn ffi_prove_fee(circuit: &mut FeeCircuit<Fr>) -> Result<(Vec<u8>, Vec<u8>), i32> {
+    let guard = V1_STATE.lock().unwrap();
+    let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
+    let pk = state.fee_pk.clone().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
+
+    circuit_keys::prove_fee(&state.pp, pk, circuit)
+        .map_err(|_| crate::ERR_CRYPTO)
+}
+
 /// Verify a Fee circuit proof.
 pub fn ffi_verify_fee(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> {
     let guard = V1_STATE.lock().unwrap();
@@ -154,4 +184,51 @@ pub fn ffi_verify_fee(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> 
 
     circuit_keys::verify_fee(&state.pp, state.fee_vk.clone(), proof_bytes, pi_bytes)
         .map_err(|_| crate::ERR_CRYPTO)
+}
+
+// ─── Witness deserialization helpers ───────────────────────────────
+
+/// Deserialize a field element from 32 LE bytes.
+pub(crate) fn fr_from_bytes(bytes: &[u8]) -> Result<Fr, i32> {
+    use ark_serialize::CanonicalDeserialize;
+    Fr::deserialize(bytes).map_err(|_| crate::ERR_CRYPTO)
+}
+
+/// Read a Merkle path (TREE_DEPTH field elements) from a flat byte buffer.
+pub(crate) fn read_merkle_path(data: &[u8], offset: usize) -> Result<[Fr; TREE_DEPTH], i32> {
+    let mut path = [Fr::from(0u64); TREE_DEPTH];
+    for i in 0..TREE_DEPTH {
+        let start = offset + i * 32;
+        if start + 32 > data.len() {
+            return Err(crate::ERR_PARAM);
+        }
+        path[i] = fr_from_bytes(&data[start..start + 32])?;
+    }
+    Ok(path)
+}
+
+/// Read a TransferInput from flat bytes: amount(8) + randomness(32) + viewing_key(32) + position(8) + path(32*32) + indices(32*32)
+/// Total: 8 + 32 + 32 + 8 + 1024 + 1024 = 2128 bytes per input
+pub const TRANSFER_INPUT_SIZE: usize = 8 + 32 + 32 + 8 + 32 * TREE_DEPTH + 32 * TREE_DEPTH;
+
+pub(crate) fn read_transfer_input(data: &[u8]) -> Result<TransferInput<Fr>, i32> {
+    if data.len() < TRANSFER_INPUT_SIZE {
+        return Err(crate::ERR_PARAM);
+    }
+    let amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
+    let randomness = fr_from_bytes(&data[8..40])?;
+    let viewing_key = fr_from_bytes(&data[40..72])?;
+    let position = u64::from_le_bytes(data[72..80].try_into().unwrap());
+
+    let path = read_merkle_path(data, 80)?;
+    let indices = read_merkle_path(data, 80 + 32 * TREE_DEPTH)?;
+
+    Ok(TransferInput {
+        amount_scaled: Fr::from(amount),
+        randomness,
+        viewing_key,
+        position: Fr::from(position),
+        merkle_path: path,
+        merkle_indices: indices,
+    })
 }
