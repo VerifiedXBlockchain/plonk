@@ -11,10 +11,8 @@ use plonk_core::constraint_system::Variable;
 use plonk_hashing::poseidon::zprize_constraints::{PoseidonZZRef, PlonkSpecZZ};
 use plonk_hashing::poseidon::constants::PoseidonConstants;
 
-/// Width 3 = 2 inputs + 1 capacity (suitable for binary Merkle tree).
+/// Width 3 = 2 inputs + 1 capacity.
 const WIDTH_3: usize = 3;
-/// Width 5 = 4 inputs + 1 capacity (for ternary/4-ary hash).
-const WIDTH_5: usize = 5;
 
 /// Compute `Poseidon(left, right)` in-circuit (width-3, 2 inputs).
 ///
@@ -38,7 +36,10 @@ where
     poseidon.output_hash(composer)
 }
 
-/// Compute `Poseidon(a, b, c)` in-circuit (width-5, 3 of 4 slots, last zero-padded).
+/// Compute `Poseidon(a, b, c)` in-circuit by chaining WIDTH-3 hashes.
+///
+/// Matches off-chain `hash_field_elements(&[a, b, c])`:
+///   h = Poseidon(0, a); h = Poseidon(h, b); h = Poseidon(h, c)
 ///
 /// Returns the output variable constrained to equal the Poseidon hash.
 pub fn poseidon_hash_3<F, P>(
@@ -52,19 +53,15 @@ where
     P: TEModelParameters<BaseField = F>,
 {
     let zero = composer.zero_var();
-    let mut poseidon = PoseidonZZRef::<
-        _,
-        PlonkSpecZZ<F>,
-        WIDTH_5,
-    >::new(composer, PoseidonConstants::generate::<WIDTH_5>());
-    poseidon.input(a).expect("poseidon input a");
-    poseidon.input(b).expect("poseidon input b");
-    poseidon.input(c).expect("poseidon input c");
-    poseidon.input(zero).expect("poseidon input pad");
-    poseidon.output_hash(composer)
+    let h = poseidon_hash_2(composer, zero, a);
+    let h = poseidon_hash_2(composer, h, b);
+    poseidon_hash_2(composer, h, c)
 }
 
-/// Compute `Poseidon(a, b, c, d)` in-circuit (width-5, 4 inputs).
+/// Compute `Poseidon(a, b, c, d)` in-circuit by chaining WIDTH-3 hashes.
+///
+/// Matches off-chain `hash_field_elements(&[a, b, c, d])`:
+///   h = Poseidon(0, a); h = Poseidon(h, b); h = Poseidon(h, c); h = Poseidon(h, d)
 ///
 /// Returns the output variable constrained to equal the Poseidon hash.
 pub fn poseidon_hash_4<F, P>(
@@ -78,16 +75,11 @@ where
     F: PrimeField,
     P: TEModelParameters<BaseField = F>,
 {
-    let mut poseidon = PoseidonZZRef::<
-        _,
-        PlonkSpecZZ<F>,
-        WIDTH_5,
-    >::new(composer, PoseidonConstants::generate::<WIDTH_5>());
-    poseidon.input(a).expect("poseidon input a");
-    poseidon.input(b).expect("poseidon input b");
-    poseidon.input(c).expect("poseidon input c");
-    poseidon.input(d).expect("poseidon input d");
-    poseidon.output_hash(composer)
+    let zero = composer.zero_var();
+    let h = poseidon_hash_2(composer, zero, a);
+    let h = poseidon_hash_2(composer, h, b);
+    let h = poseidon_hash_2(composer, h, c);
+    poseidon_hash_2(composer, h, d)
 }
 
 #[cfg(test)]

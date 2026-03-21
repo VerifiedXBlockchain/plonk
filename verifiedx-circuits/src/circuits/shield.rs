@@ -67,11 +67,12 @@ where
         // Use constrain_to_constant with value=0. During verification,
         // the actual public input value is added to the PI polynomial.
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(amount_var, F::zero(), Some(F::zero()));
+        composer.constrain_to_constant(amount_var, F::zero(), Some(-self.amount_scaled));
         let pi0 = n;
 
+        let note_hash_val = composer.value_of_var(computed_note_hash);
         let n = composer.circuit_bound();
-        composer.constrain_to_constant(computed_note_hash, F::zero(), Some(F::zero()));
+        composer.constrain_to_constant(computed_note_hash, F::zero(), Some(-note_hash_val));
         let pi1 = n;
 
         self.pi_pos = vec![pi0, pi1];
@@ -112,7 +113,7 @@ mod tests {
 
     #[test]
     fn shield_circuit_prove_verify_roundtrip() {
-        use plonk_core::commitment::HomomorphicCommitment;
+        use ark_poly_commit::PolynomialCommitment;
         use rand::rngs::StdRng;
         use rand::SeedableRng;
 
@@ -124,8 +125,8 @@ mod tests {
 
         // 1. Compile circuit (with dummy witness for shape)
         let mut dummy = ShieldCircuit::<Fr>::default();
-        let (pk, vd) = dummy
-            .compile::<PC>(&pp)
+        let (pk, (vk, _pi_pos)) =
+            <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::compile::<PC>(&mut dummy, &pp)
             .expect("compile failed");
 
         // 2. Create real circuit with witness values
@@ -139,14 +140,14 @@ mod tests {
         };
 
         // 3. Generate proof
-        let (proof, pi) = circuit
-            .gen_proof::<PC>(&pp, pk, label)
+        let (proof, pi) =
+            <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(&mut circuit, &pp, pk, label)
             .expect("proof gen failed");
 
         // 4. Verify proof
         let verified = verify_proof::<Fr, EdwardsParameters, PC>(
             &pp,
-            vd,
+            vk,
             &proof,
             &pi,
             label,

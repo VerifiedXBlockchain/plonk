@@ -68,3 +68,23 @@ pub fn nullifier_from_parts(
     let pos_fr = Fr::from(tree_position);
     hash_field_elements(&[vk_fr, comm_fr, pos_fr])
 }
+
+/// Derive nullifier from a note_hash (v1 circuit-compatible).
+///
+/// `nullifier = Poseidon(viewing_key, note_hash, position)`
+///
+/// Unlike `nullifier_from_parts`, this takes the note_hash directly
+/// as a 32-byte LE field element (output of `poseidon_note_hash`).
+pub fn nullifier_from_note_hash(
+    viewing_key: &[u8],
+    note_hash: &[u8],
+    tree_position: u64,
+) -> Result<[u8; 32], ()> {
+    if viewing_key.len() != 32 || note_hash.len() != 32 {
+        return Err(());
+    }
+    let vk_fr = Fr::from_le_bytes_mod_order(viewing_key);
+    let nh_fr = Fr::from_le_bytes_mod_order(note_hash);
+    let pos_fr = Fr::from(tree_position);
+    hash_field_elements(&[vk_fr, nh_fr, pos_fr])
+}

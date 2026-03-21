@@ -20,7 +20,7 @@ use verifiedx_circuits::circuits::fee::FeeCircuit;
 use verifiedx_circuits::gadgets::merkle::TREE_DEPTH;
 
 type PC = KZG10<Bls12_381>;
-type UParams = <PC as plonk_core::commitment::HomomorphicCommitment<Fr>>::UniversalParams;
+type UParams = <PC as ark_poly_commit::PolynomialCommitment<Fr, ark_poly::univariate::DensePolynomial<Fr>>>::UniversalParams;
 
 /// Loaded v1 circuit keys (populated by `load_v1_params`).
 pub(crate) static V1_STATE: Lazy<Mutex<Option<V1Loaded>>> =
