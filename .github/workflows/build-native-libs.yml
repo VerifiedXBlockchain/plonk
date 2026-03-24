@@ -7,7 +7,7 @@ on:
 
 jobs:
   build-macos:
-    name: Build macOS dylib
+    name: Build macOS universal dylib
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,15 +16,26 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.83.0
+          targets: x86_64-apple-darwin, aarch64-apple-darwin
 
-      - name: Build plonk_ffi for macOS
-        run: cargo build -p plonk_ffi --release
+      - name: Build for x86_64
+        run: cargo build -p plonk_ffi --release --target x86_64-apple-darwin
 
-      - name: Upload macOS dylib
+      - name: Build for aarch64
+        run: cargo build -p plonk_ffi --release --target aarch64-apple-darwin
+
+      - name: Create universal binary
+        run: |
+          lipo -create \
+            target/x86_64-apple-darwin/release/libplonk_ffi.dylib \
+            target/aarch64-apple-darwin/release/libplonk_ffi.dylib \
+            -output libplonk_ffi.dylib
+
+      - name: Upload macOS universal dylib
         uses: actions/upload-artifact@v4
         with:
           name: libplonk_ffi-macos
-          path: target/release/libplonk_ffi.dylib
+          path: libplonk_ffi.dylib
 
   build-linux:
     name: Build Linux .so
