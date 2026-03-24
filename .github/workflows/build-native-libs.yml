@@ -16,7 +16,11 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.83.0
-          targets: x86_64-apple-darwin, aarch64-apple-darwin
+
+      - name: Add cross-compilation targets
+        run: |
+          rustup target add x86_64-apple-darwin
+          rustup target add aarch64-apple-darwin
 
       - name: Build for x86_64
         run: cargo build -p plonk_ffi --release --target x86_64-apple-darwin
