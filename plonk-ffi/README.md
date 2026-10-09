@@ -32,6 +32,28 @@ cargo build -p plonk_ffi --release
 cp target/release/libplonk_ffi.dylib /path/to/VerifiedX-Core/ReserveBlockCore/Plonk/mac/
 ```
 
+## v2 owner-bound circuits (VerifiedX fund-loss re-audit, Oct 2026; params `VXPLNK04`, public inputs VFXPI1 version 3)
+
+The v1 circuits bound a note as `Poseidon(amount, randomness)` with the spending key a free witness: anyone who knew a
+note (its sender always does) could spend it with any key, once per key, and the Unshield did not bind its recipient.
+The v2 circuits (`verifiedx-circuits/src/circuits/*.rs`, CIRCUIT_ID `*_V2`, transcript labels `VFX_*_V2`):
+
+- `owner_pk = Poseidon(OWNER_PK_DOMAIN, nullifier_key)` (`OWNER_PK_DOMAIN` = `b"VFX_OWNR"` little-endian),
+  `note_hash = Poseidon(amount, randomness, owner_pk)`, `nullifier = Poseidon(nullifier_key, note_hash, position)`;
+  every spent note proves knowledge of its owner's nullifier key, every output carries its recipient's owner key.
+- Unshield gains public input 7, `recipient_tag` (the node derives it from the transparent recipient address).
+- Params: `vfx_plonk_setup` writes **`VXPLNK04`** (same layout as 03, new keys; 405 MB with prover keys; deterministic
+  setup). `plonk_load_params` refuses `VXPLNK03`. Capability bit **64** `PLONK_CAP_V2_CIRCUITS`.
+- `plonk_verify` takes **VFXPI1 version 3** blobs only (version 2 = `ERR_PARAM`): as version 2, plus `recipient_tag` (32)
+  at the end of the Unshield body (216 bytes).
+- Witness wire formats: input `nullifier_key` where `viewing_key` was; outputs are 72 bytes (`+ owner_pk`); Unshield
+  adds `change_owner_pk` (32) after `change_randomness` and `recipient_tag` (32) after `merkle_root` (4408 bytes); Fee
+  adds `change_owner_pk` (2240 bytes); `plonk_prove_shield(amount, randomness, owner_pk, ...)`.
+- New exports `poseidon_owner_pk(nullifier_key, out)` and `poseidon_note_hash_v2(amount, randomness, owner_pk, out)`.
+- Tests (`tests/v1_vfxpi2.rs`, needs `VFX_PLONK_PARAMS` = the VXPLNK04 file): every circuit against a v3 blob, the public
+  dummy note, and the two re-audit attacks - a note spent with another nullifier key, and a redirected unshield - both
+  refused; plus the `plonk_load_params` path and capability bits.
+
 ## v1 circuits: circuit-compatible Poseidon and on-chain public inputs (VFXPI1 version 2)
 
 Added for the Oct 2026 fund-loss audit (VerifiedX-Core item 1, stage 2). With **`VXPLNK03`** params loaded,

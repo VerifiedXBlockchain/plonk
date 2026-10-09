@@ -47,6 +47,11 @@ pub const PLONK_CAP_V1_PROVE: u32 = 16;
 /// positions from on-chain fields), and the circuit-compatible Poseidon exports (`poseidon_hash_2`, `poseidon_hash_3`,
 /// `poseidon_note_hash`, `merkle_root_from_path_v1`, `poseidon_merkle_zero`) exist. Matches C# `PlonkNative.CapVfxPi2Verify`.
 pub const PLONK_CAP_VFXPI2_VERIFY: u32 = 32;
+/// Bit 6: the v2 owner-bound circuits are loaded (`VXPLNK04`): notes carry an owner key, spends prove the owner's
+/// nullifier key, the Unshield binds its recipient, and `plonk_verify` takes VFXPI1 **version 3** blobs. The
+/// witness formats of `plonk_prove_*` are the v2 ones (see each function), `plonk_prove_shield` takes `owner_pk`,
+/// and `poseidon_owner_pk` / `poseidon_note_hash_v2` exist. Matches C# `PlonkNative.CapV2Circuits`.
+pub const PLONK_CAP_V2_CIRCUITS: u32 = 64;
 
 #[no_mangle]
 pub extern "C" fn plonk_capabilities() -> u32 {
@@ -61,7 +66,7 @@ pub extern "C" fn plonk_capabilities() -> u32 {
     drop(guard);
     // v1 real circuit capabilities
     if circuits_v1::is_v1_loaded() {
-        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY;
+        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY | PLONK_CAP_V2_CIRCUITS;
         if circuits_v1::has_v1_prover_keys() {
             c |= PLONK_CAP_V1_PROVE;
         }
@@ -81,8 +86,9 @@ pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
     };
     match std::fs::read(path) {
         Ok(bytes) => {
-            // Try v1 (VXPLNK03) first
-            if bytes.len() >= 8 && &bytes[..8] == b"VXPLNK03" {
+            // The circuit params (VXPLNK04: v2 owner-bound circuits) first. VXPLNK03 (the superseded v1 circuits) is
+            // refused outright: nothing may verify or prove against ownerless notes any more.
+            if bytes.len() >= 8 && (&bytes[..8] == verifiedx_circuits::circuit_keys::PARAMS_MAGIC_V1 || &bytes[..8] == verifiedx_circuits::circuit_keys::PARAMS_MAGIC_V1_CIRCUITS) {
                 match circuits_v1::try_load_v1_params(&bytes) {
                     Ok(()) => {
                         *PARAMS.lock().unwrap() = bytes;
@@ -361,6 +367,26 @@ pub extern "C" fn poseidon_note_hash(amount_scaled: u64, randomness: *const u8, 
     write_fr(&poseidon_v1::note_hash(amount_scaled, r), hash_out)
 }
 
+/// `owner_pk = Poseidon(OWNER_PK_DOMAIN, nullifier_key)`: the owner key the v2 notes carry (`poseidon_v1::owner_pk`).
+#[no_mangle]
+pub extern "C" fn poseidon_owner_pk(nullifier_key: *const u8, hash_out: *mut u8) -> i32 {
+    let nk = match read_fr(nullifier_key) {
+        Ok(k) => k,
+        Err(e) => return e,
+    };
+    write_fr(&poseidon_v1::owner_pk(nk), hash_out)
+}
+
+/// `note_hash = Poseidon(amount_scaled, randomness, owner_pk)`: the v2 (owner-bound) Merkle leaf the circuits bind.
+#[no_mangle]
+pub extern "C" fn poseidon_note_hash_v2(amount_scaled: u64, randomness: *const u8, owner_pk: *const u8, hash_out: *mut u8) -> i32 {
+    let (r, o) = match (read_fr(randomness), read_fr(owner_pk)) {
+        (Ok(r), Ok(o)) => (r, o),
+        (Err(e), _) | (_, Err(e)) => return e,
+    };
+    write_fr(&poseidon_v1::note_hash_v2(amount_scaled, r, o), hash_out)
+}
+
 /// The digest of an empty subtree of height `level` (0 = an empty leaf, i.e. the zero field element), used to
 /// pad the fixed-depth-32 tree the v1 circuits prove against.
 #[no_mangle]
@@ -423,10 +449,12 @@ pub extern "C" fn plonk_verify(
         // A VFXPI1 blob: version 2 is rebuilt at the circuits' positions from the on-chain fields (what validators
         // send); version 1 carried G1 commitments the v1 circuits do not bind and cannot be verified against them.
         if vfxpi1::is_vfxpi(pi_slice) {
-            if vfxpi1::version(pi_slice) != Some(vfxpi1::VERSION_2) {
+            // Version 3 only: version 2 blobs carry v1-circuit values (ownerless notes) and cannot verify against the
+            // v2 circuits; version 1 carried G1 commitments no circuit binds.
+            if vfxpi1::version(pi_slice) != Some(vfxpi1::VERSION_3) {
                 return ERR_PARAM;
             }
-            return match circuits_v1::ffi_verify_vfxpi2(circuit_type, proof_slice, pi_slice) {
+            return match circuits_v1::ffi_verify_vfxpi3(circuit_type, proof_slice, pi_slice) {
                 Ok(true) => 1,
                 Ok(false) => 0,
                 Err(e) => e,
@@ -519,7 +547,7 @@ pub extern "C" fn plonk_prove_v0(
 /// Generate a Shield circuit proof (v1). Requires `VXPLNK03` params with prover keys.
 ///
 /// # Safety
-/// `randomness` must point to 32 bytes. `proof_out` must point to `*proof_out_len` writable bytes.
+/// `randomness` and `owner_pk` (v2: the recipient's owner key) must point to 32 bytes. `proof_out` must point to `*proof_out_len` writable bytes.
 /// `pi_out` must point to `*pi_out_len` writable bytes.
 /// On success, `*proof_out_len` and `*pi_out_len` are set to the actual written lengths.
 /// If buffers are too small, returns `ERR_PARAM` and sets the required lengths.
@@ -527,12 +555,13 @@ pub extern "C" fn plonk_prove_v0(
 pub unsafe extern "C" fn plonk_prove_shield(
     amount_scaled: u64,
     randomness: *const u8,
+    owner_pk: *const u8,
     proof_out: *mut u8,
     proof_out_len: *mut usize,
     pi_out: *mut u8,
     pi_out_len: *mut usize,
 ) -> i32 {
-    if randomness.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
+    if randomness.is_null() || owner_pk.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
         return ERR_NULL;
     }
 
@@ -541,8 +570,13 @@ pub unsafe extern "C" fn plonk_prove_shield(
         Ok(f) => f,
         Err(_) => return ERR_CRYPTO,
     };
+    let owner_slice = std::slice::from_raw_parts(owner_pk, 32);
+    let owner_fr: ark_bls12_381::Fr = match ark_serialize::CanonicalDeserialize::deserialize(owner_slice) {
+        Ok(f) => f,
+        Err(_) => return ERR_CRYPTO,
+    };
 
-    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_shield(amount_scaled, randomness_fr) {
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_shield(amount_scaled, randomness_fr, owner_fr) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -556,18 +590,19 @@ pub unsafe extern "C" fn plonk_prove_shield(
 /// For each of 2 inputs (sequentially):
 ///   - amount_scaled: u64 LE (8 bytes)
 ///   - randomness: Fr LE (32 bytes)
-///   - viewing_key: Fr LE (32 bytes)
+///   - nullifier_key: Fr LE (32 bytes)  (v2: the owner's nullifier key)
 ///   - position: u64 LE (8 bytes)
 ///   - merkle_path: 32 × Fr LE (32×32 = 1024 bytes)
 ///   - merkle_indices: 32 × Fr LE (1024 bytes)
 /// Then 2 outputs:
 ///   - amount_scaled: u64 LE (8 bytes)
 ///   - randomness: Fr LE (32 bytes)
+///   - owner_pk: Fr LE (32 bytes)        (v2: the recipient's owner key)
 /// Then:
 ///   - fee_scaled: u64 LE (8 bytes)
 ///   - merkle_root: Fr LE (32 bytes)
 ///
-/// Total = 2×2128 + 2×40 + 8 + 32 = 4384 bytes
+/// Total = 2×2128 + 2×72 + 8 + 32 = 4448 bytes
 #[no_mangle]
 pub unsafe extern "C" fn plonk_prove_transfer(
     witness_data: *const u8,
@@ -583,12 +618,12 @@ pub unsafe extern "C" fn plonk_prove_transfer(
 
     let data = std::slice::from_raw_parts(witness_data, witness_data_len);
 
-    let expected_len = 2 * circuits_v1::TRANSFER_INPUT_SIZE + 2 * 40 + 8 + 32;
+    let expected_len = 2 * circuits_v1::TRANSFER_INPUT_SIZE + 2 * circuits_v1::TRANSFER_OUTPUT_SIZE + 8 + 32;
     if data.len() < expected_len {
         return ERR_PARAM;
     }
 
-    use verifiedx_circuits::circuits::transfer::{TransferCircuit, TransferInput, TransferOutput};
+    use verifiedx_circuits::circuits::transfer::TransferCircuit;
     use ark_bls12_381::Fr;
 
     // Read 2 inputs
@@ -603,19 +638,17 @@ pub unsafe extern "C" fn plonk_prove_transfer(
 
     let mut cursor = 2 * circuits_v1::TRANSFER_INPUT_SIZE;
 
-    // Read 2 outputs (amount u64 LE + randomness Fr)
-    let out0_amount = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
-    let out0_rand = match circuits_v1::fr_from_bytes(&data[cursor+8..cursor+40]) {
-        Ok(f) => f,
+    // Read 2 outputs (amount u64 LE + randomness Fr + owner_pk Fr)
+    let out0 = match circuits_v1::read_transfer_output(&data[cursor..cursor + circuits_v1::TRANSFER_OUTPUT_SIZE]) {
+        Ok(o) => o,
         Err(e) => return e,
     };
-    cursor += 40;
-    let out1_amount = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
-    let out1_rand = match circuits_v1::fr_from_bytes(&data[cursor+8..cursor+40]) {
-        Ok(f) => f,
+    cursor += circuits_v1::TRANSFER_OUTPUT_SIZE;
+    let out1 = match circuits_v1::read_transfer_output(&data[cursor..cursor + circuits_v1::TRANSFER_OUTPUT_SIZE]) {
+        Ok(o) => o,
         Err(e) => return e,
     };
-    cursor += 40;
+    cursor += circuits_v1::TRANSFER_OUTPUT_SIZE;
 
     let fee = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
     cursor += 8;
@@ -626,10 +659,7 @@ pub unsafe extern "C" fn plonk_prove_transfer(
 
     let mut circuit = TransferCircuit {
         inputs: [input0, input1],
-        outputs: [
-            TransferOutput { amount_scaled: Fr::from(out0_amount), randomness: out0_rand },
-            TransferOutput { amount_scaled: Fr::from(out1_amount), randomness: out1_rand },
-        ],
+        outputs: [out0, out1],
         fee_scaled: Fr::from(fee),
         merkle_root,
         pi_pos: Vec::new(),
@@ -651,10 +681,12 @@ pub unsafe extern "C" fn plonk_prove_transfer(
 ///   - transparent_amount_scaled: u64 LE (8 bytes)
 ///   - change_amount_scaled: u64 LE (8 bytes)
 ///   - change_randomness: Fr LE (32 bytes)
+///   - change_owner_pk: Fr LE (32 bytes)   (v2)
 ///   - fee_scaled: u64 LE (8 bytes)
 ///   - merkle_root: Fr LE (32 bytes)
+///   - recipient_tag: Fr LE (32 bytes)     (v2: the transparent recipient, a public input)
 ///
-/// Total = 2×2128 + 88 = 4344 bytes
+/// Total = 2×2128 + 152 = 4408 bytes
 #[no_mangle]
 pub unsafe extern "C" fn plonk_prove_unshield(
     witness_data: *const u8,
@@ -670,7 +702,7 @@ pub unsafe extern "C" fn plonk_prove_unshield(
 
     let data = std::slice::from_raw_parts(witness_data, witness_data_len);
 
-    let expected_len = 2 * circuits_v1::TRANSFER_INPUT_SIZE + 88;
+    let expected_len = 2 * circuits_v1::TRANSFER_INPUT_SIZE + 152;
     if data.len() < expected_len {
         return ERR_PARAM;
     }
@@ -698,9 +730,19 @@ pub unsafe extern "C" fn plonk_prove_unshield(
         Err(e) => return e,
     };
     cursor += 32;
+    let change_owner = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    cursor += 32;
     let fee = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
     cursor += 8;
     let merkle_root = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    cursor += 32;
+    let recipient_tag = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
         Ok(f) => f,
         Err(e) => return e,
     };
@@ -710,8 +752,10 @@ pub unsafe extern "C" fn plonk_prove_unshield(
         transparent_amount_scaled: Fr::from(transparent_amount),
         change_amount_scaled: Fr::from(change_amount),
         change_randomness: change_rand,
+        change_owner_pk: change_owner,
         fee_scaled: Fr::from(fee),
         merkle_root,
+        recipient_tag,
         pi_pos: Vec::new(),
     };
 
@@ -730,10 +774,11 @@ pub unsafe extern "C" fn plonk_prove_unshield(
 /// Then:
 ///   - change_amount_scaled: u64 LE (8 bytes)
 ///   - change_randomness: Fr LE (32 bytes)
+///   - change_owner_pk: Fr LE (32 bytes)   (v2)
 ///   - fee_scaled: u64 LE (8 bytes)
 ///   - merkle_root: Fr LE (32 bytes)
 ///
-/// Total = 2128 + 80 = 2208 bytes
+/// Total = 2128 + 112 = 2240 bytes
 #[no_mangle]
 pub unsafe extern "C" fn plonk_prove_fee(
     witness_data: *const u8,
@@ -749,13 +794,12 @@ pub unsafe extern "C" fn plonk_prove_fee(
 
     let data = std::slice::from_raw_parts(witness_data, witness_data_len);
 
-    let expected_len = circuits_v1::TRANSFER_INPUT_SIZE + 80;
+    let expected_len = circuits_v1::TRANSFER_INPUT_SIZE + 112;
     if data.len() < expected_len {
         return ERR_PARAM;
     }
 
     use verifiedx_circuits::circuits::fee::FeeCircuit;
-    use verifiedx_circuits::gadgets::merkle::TREE_DEPTH;
     use ark_bls12_381::Fr;
 
     // Read input (reuse transfer_input reader since format is the same)
@@ -773,6 +817,11 @@ pub unsafe extern "C" fn plonk_prove_fee(
         Err(e) => return e,
     };
     cursor += 32;
+    let change_owner = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
+        Ok(f) => f,
+        Err(e) => return e,
+    };
+    cursor += 32;
     let fee = u64::from_le_bytes(data[cursor..cursor+8].try_into().unwrap());
     cursor += 8;
     let merkle_root = match circuits_v1::fr_from_bytes(&data[cursor..cursor+32]) {
@@ -783,12 +832,13 @@ pub unsafe extern "C" fn plonk_prove_fee(
     let mut circuit = FeeCircuit {
         input_amount_scaled: input.amount_scaled,
         input_randomness: input.randomness,
-        input_viewing_key: input.viewing_key,
+        input_nullifier_key: input.nullifier_key,
         input_position: input.position,
         input_merkle_path: input.merkle_path,
         input_merkle_indices: input.merkle_indices,
         change_amount_scaled: Fr::from(change_amount),
         change_randomness: change_rand,
+        change_owner_pk: change_owner,
         fee_scaled: Fr::from(fee),
         merkle_root,
         pi_pos: Vec::new(),

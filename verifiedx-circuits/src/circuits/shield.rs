@@ -1,34 +1,39 @@
-//! Shield Circuit (T→Z) — proves that an output commitment
-//! matches a stated transparent amount.
+//! Shield Circuit (T→Z) — proves that an output note matches a stated
+//! transparent amount and names its owner.
 //!
 //! Public inputs (in order):
-//!   PI[0] = transparent_amount (scaled by 10^18)
-//!   PI[1] = output_note_hash  = Poseidon(amount, randomness)
+//!   PI[0] = transparent_amount (scaled by 10^8)
+//!   PI[1] = output_note_hash  = Poseidon(amount, randomness, owner_pk)
 //!
 //! Private witnesses:
-//!   - randomness (blinding factor for Pedersen commitment)
+//!   - randomness (the note's blinding factor)
+//!   - owner_pk   (the recipient's owner public key, from the recipient's zfx address)
 //!
 //! Constraints:
-//!   1. note_hash = Poseidon(transparent_amount, randomness)
+//!   1. note_hash = Poseidon(transparent_amount, randomness, owner_pk)
 //!   2. note_hash == PI[1]
 //!   3. range_check(transparent_amount, 88 bits)
-
+//!
+//! v2 (fund-loss re-audit, Oct 2026): the owner is part of the note, so only the holder of the matching
+//! nullifier key can ever spend it; the sender, who knows amount and randomness, cannot.
 use ark_ec::models::TEModelParameters;
 use ark_ff::PrimeField;
 use plonk_core::circuit::Circuit;
 use plonk_core::constraint_system::StandardComposer;
 use plonk_core::error::Error;
 
-use crate::gadgets::note_hash::note_hash_gadget;
+use crate::gadgets::note_hash::note_hash_v2_gadget;
 use crate::gadgets::range::range_check;
 
 /// Shield circuit witness data.
 #[derive(Debug, Clone)]
 pub struct ShieldCircuit<F: PrimeField> {
-    /// The transparent amount being shielded (scaled × 10^18).
+    /// The transparent amount being shielded (scaled × 10^8).
     pub amount_scaled: F,
-    /// The blinding factor / randomness for the Pedersen commitment.
+    /// The note's randomness.
     pub randomness: F,
+    /// The recipient's owner public key (`Poseidon(OWNER_PK_DOMAIN, nullifier_key)`).
+    pub owner_pk: F,
     /// Gate indices for public inputs (filled by gadget).
     pub pi_pos: Vec<usize>,
 }
@@ -38,6 +43,7 @@ impl<F: PrimeField> Default for ShieldCircuit<F> {
         Self {
             amount_scaled: F::zero(),
             randomness: F::zero(),
+            owner_pk: F::zero(),
             pi_pos: Vec::new(),
         }
     }
@@ -48,15 +54,16 @@ where
     F: PrimeField,
     P: TEModelParameters<BaseField = F>,
 {
-    const CIRCUIT_ID: [u8; 32] = *b"VFX_SHIELD_CIRCUIT_V1___________";
+    const CIRCUIT_ID: [u8; 32] = *b"VFX_SHIELD_CIRCUIT_V2___________";
 
     fn gadget(&mut self, composer: &mut StandardComposer<F, P>) -> Result<(), Error> {
         // Private witnesses
         let amount_var = composer.add_input(self.amount_scaled);
         let randomness_var = composer.add_input(self.randomness);
+        let owner_var = composer.add_input(self.owner_pk);
 
-        // Compute note_hash = Poseidon(amount, randomness)
-        let computed_note_hash = note_hash_gadget(composer, amount_var, randomness_var);
+        // note_hash = Poseidon(amount, randomness, owner_pk)
+        let computed_note_hash = note_hash_v2_gadget(composer, amount_var, randomness_var, owner_var);
 
         // Range check on the amount (0 ≤ amount < 2^88)
         range_check(composer, amount_var);
@@ -64,8 +71,6 @@ where
         // Public inputs:
         //   PI[0] = transparent_amount
         //   PI[1] = output_note_hash
-        // Use constrain_to_constant with value=0. During verification,
-        // the actual public input value is added to the PI polynomial.
         let n = composer.circuit_bound();
         composer.constrain_to_constant(amount_var, F::zero(), Some(-self.amount_scaled));
         let pi0 = n;
@@ -76,13 +81,11 @@ where
         let pi1 = n;
 
         self.pi_pos = vec![pi0, pi1];
-
         Ok(())
     }
 
     fn padded_circuit_size(&self) -> usize {
-        // Shield circuit is small. Poseidon ~300 constraints + range ~88 + overhead.
-        // Round up to next power of 2 for FFT.
+        // Three chained width-3 Poseidon permutations + the 88-bit range check + overhead.
         1 << 12 // 4096
     }
 }
@@ -100,11 +103,11 @@ mod tests {
     #[test]
     fn shield_circuit_compiles() {
         let mut circuit = ShieldCircuit::<Fr> {
-            amount_scaled: Fr::from(50_000_000_000_000_000_000u128),
+            amount_scaled: Fr::from(5_000_000_000u64),
             randomness: Fr::from(12345u64),
+            owner_pk: Fr::from(777u64),
             pi_pos: Vec::new(),
         };
-
         let mut composer = StandardComposer::<Fr, EdwardsParameters>::new();
         circuit.gadget(&mut composer).expect("circuit should compile");
         assert!(composer.circuit_bound() > 0);
@@ -119,39 +122,23 @@ mod tests {
 
         let mut rng = StdRng::seed_from_u64(42);
         let label = b"shield_test";
-
-        // Setup universal params
         let pp = PC::setup(1 << 12, None, &mut rng).expect("setup failed");
 
-        // 1. Compile circuit (with dummy witness for shape)
         let mut dummy = ShieldCircuit::<Fr>::default();
         let (pk, (vk, _pi_pos)) =
             <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::compile::<PC>(&mut dummy, &pp)
-            .expect("compile failed");
-
-        // 2. Create real circuit with witness values
-        let amount = Fr::from(50_000_000_000_000_000_000u128); // 50 VFX
-        let randomness = Fr::from(9876543210u64);
+                .expect("compile failed");
 
         let mut circuit = ShieldCircuit::<Fr> {
-            amount_scaled: amount,
-            randomness,
+            amount_scaled: Fr::from(5_000_000_000u64),
+            randomness: Fr::from(9876543210u64),
+            owner_pk: Fr::from(31337u64),
             pi_pos: Vec::new(),
         };
-
-        // 3. Generate proof
         let (proof, pi) =
             <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(&mut circuit, &pp, pk, label)
-            .expect("proof gen failed");
-
-        // 4. Verify proof
-        let verified = verify_proof::<Fr, EdwardsParameters, PC>(
-            &pp,
-            vk,
-            &proof,
-            &pi,
-            label,
-        );
+                .expect("proof gen failed");
+        let verified = verify_proof::<Fr, EdwardsParameters, PC>(&pp, vk, &proof, &pi, label);
         assert!(verified.is_ok(), "proof verification failed: {:?}", verified.err());
     }
 }

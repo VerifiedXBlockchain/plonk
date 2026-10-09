@@ -7,7 +7,7 @@
 //!   --v0           Generate legacy VXPLNK01/02 format (v0 digest binding)
 //!   --verify-only  Omit prover keys (smaller file, validator-only)
 //!
-//! Default: generates VXPLNK03 format with prover keys.
+//! Default: generates VXPLNK04 format (v2 owner-bound circuits) with prover keys.
 //!   Default output: vfx_plonk_v1.params (or vfx_plonk_v0.params for --v0)
 
 use std::env;
@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         // v1 format with real circuits
         let include_pk = !verify_only;
-        eprintln!("Compiling v1 circuits (Shield, Transfer, Unshield, Fee)...");
+        eprintln!("Compiling v2 circuits (Shield, Transfer, Unshield, Fee; owner-bound notes, bound recipient)...");
         eprintln!("  Include prover keys: {}", include_pk);
         eprintln!("  This may take a few minutes...");
 
@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let bytes = blob.serialize();
         fs::write(&out, &bytes)?;
         eprintln!(
-            "Wrote {} bytes to {} (VXPLNK03 v1 real circuits, {} prover keys).",
+            "Wrote {} bytes to {} (VXPLNK04 v2 owner-bound circuits, {} prover keys).",
             bytes.len(),
             out.display(),
             if include_pk { "with" } else { "without" }

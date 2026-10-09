@@ -93,14 +93,16 @@ pub fn prove_shield(
     pk: ProverKey<Fr>,
     amount_scaled: Fr,
     randomness: Fr,
+    owner_pk: Fr,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let mut circuit = ShieldCircuit::<Fr> {
         amount_scaled,
         randomness,
+        owner_pk,
         pi_pos: Vec::new(),
     };
 
-    let (proof, pi) = <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(&mut circuit, pp, pk, b"VFX_SHIELD_V1")?;
+    let (proof, pi) = <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(&mut circuit, pp, pk, b"VFX_SHIELD_V2")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -118,7 +120,7 @@ pub fn verify_shield(
     let proof = deserialize_proof(proof_bytes)?;
     let pi = deserialize_pi(pi_bytes)?;
 
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_SHIELD_V1") {
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_SHIELD_V2") {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -133,7 +135,7 @@ pub fn prove_transfer(
     pk: ProverKey<Fr>,
     circuit: &mut TransferCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = <TransferCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_TRANSFER_V1")?;
+    let (proof, pi) = <TransferCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_TRANSFER_V2")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -151,7 +153,7 @@ pub fn verify_transfer(
     let proof = deserialize_proof(proof_bytes)?;
     let pi = deserialize_pi(pi_bytes)?;
 
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_TRANSFER_V1") {
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_TRANSFER_V2") {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -166,7 +168,7 @@ pub fn prove_unshield(
     pk: ProverKey<Fr>,
     circuit: &mut UnshieldCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = <UnshieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_UNSHIELD_V1")?;
+    let (proof, pi) = <UnshieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_UNSHIELD_V2")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -184,7 +186,7 @@ pub fn verify_unshield(
     let proof = deserialize_proof(proof_bytes)?;
     let pi = deserialize_pi(pi_bytes)?;
 
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_UNSHIELD_V1") {
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_UNSHIELD_V2") {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -199,7 +201,7 @@ pub fn prove_fee(
     pk: ProverKey<Fr>,
     circuit: &mut FeeCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = <FeeCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_FEE_V1")?;
+    let (proof, pi) = <FeeCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_FEE_V2")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -217,7 +219,7 @@ pub fn verify_fee(
     let proof = deserialize_proof(proof_bytes)?;
     let pi = deserialize_pi(pi_bytes)?;
 
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_FEE_V1") {
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_FEE_V2") {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -256,7 +258,7 @@ pub fn pi_positions_transfer() -> Vec<usize> {
     positions_of(TransferCircuit::<Fr>::default())
 }
 
-/// Public-input positions of the Unshield circuit: [root, null0, null1, transparent, change_hash, fee].
+/// Public-input positions of the Unshield circuit: [root, null0, null1, transparent, change_hash, fee, recipient_tag].
 pub fn pi_positions_unshield() -> Vec<usize> {
     positions_of(UnshieldCircuit::<Fr>::default())
 }
@@ -282,7 +284,7 @@ pub fn public_inputs_from_values(positions: &[usize], values: &[Fr]) -> Result<P
 /// Verify a Shield proof against already-built public inputs.
 pub fn verify_shield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_SHIELD_V1") {
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_SHIELD_V2") {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -292,7 +294,7 @@ pub fn verify_shield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_byt
 /// Verify a Transfer proof against already-built public inputs.
 pub fn verify_transfer_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_TRANSFER_V1") {
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_TRANSFER_V2") {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -302,7 +304,7 @@ pub fn verify_transfer_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_b
 /// Verify an Unshield proof against already-built public inputs.
 pub fn verify_unshield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_UNSHIELD_V1") {
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_UNSHIELD_V2") {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -312,7 +314,7 @@ pub fn verify_unshield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_b
 /// Verify a Fee proof against already-built public inputs.
 pub fn verify_fee_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_FEE_V1") {
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_FEE_V2") {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -349,8 +351,11 @@ fn deserialize_pi(bytes: &[u8]) -> Result<PublicInputs<Fr>, Error> {
 
 // ─── Params blob (v1) ──────────────────────────────────────────────
 
-/// Magic bytes for v1 circuit params.
-pub const PARAMS_MAGIC_V1: &[u8; 8] = b"VXPLNK03";
+/// Magic bytes of the circuit params blob. `VXPLNK03` carried the v1 circuits (notes without an owner);
+/// `VXPLNK04` carries the v2 owner-bound circuits (fund-loss re-audit, Oct 2026). The blob layout is unchanged.
+pub const PARAMS_MAGIC_V1: &[u8; 8] = b"VXPLNK04";
+/// The superseded v1-circuit magic, refused by the loader.
+pub const PARAMS_MAGIC_V1_CIRCUITS: &[u8; 8] = b"VXPLNK03";
 
 /// Serialized params blob containing universal params + circuit keys.
 pub struct ParamsBlobV1 {

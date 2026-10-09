@@ -41,14 +41,28 @@ pub fn hash_3(a: Fr, b: Fr, c: Fr) -> Fr {
     hash_2(h, c)
 }
 
-/// `note_hash = Poseidon(amount_scaled, randomness)` — the Merkle leaf and the value the circuits bind.
+/// `note_hash = Poseidon(amount_scaled, randomness)` — the v1 note (no owner). Legacy helper; no v2 circuit uses it.
 pub fn note_hash(amount_scaled: u64, randomness: Fr) -> Fr {
     hash_2(Fr::from(amount_scaled), randomness)
 }
 
-/// `nullifier = Poseidon(viewing_key, note_hash, position)` — the circuits' `nullifier_gadget`.
-pub fn nullifier(viewing_key: Fr, note_hash: Fr, tree_position: u64) -> Fr {
-    hash_3(viewing_key, note_hash, Fr::from(tree_position))
+/// `nullifier = Poseidon(nullifier_key, note_hash, position)` — the circuits' `nullifier_gadget`. In the v2
+/// circuits the key is the owner's nullifier key (whose `owner_pk` is inside the note).
+pub fn nullifier(nullifier_key: Fr, note_hash: Fr, tree_position: u64) -> Fr {
+    hash_3(nullifier_key, note_hash, Fr::from(tree_position))
+}
+
+/// Domain separator of `owner_pk` (re-exported from the circuits).
+pub const OWNER_PK_DOMAIN: u64 = verifiedx_circuits::gadgets::note_hash::OWNER_PK_DOMAIN;
+
+/// `owner_pk = Poseidon(OWNER_PK_DOMAIN, nullifier_key)` — the circuits' `owner_pk_gadget`.
+pub fn owner_pk(nullifier_key: Fr) -> Fr {
+    hash_2(Fr::from(OWNER_PK_DOMAIN), nullifier_key)
+}
+
+/// `note_hash = Poseidon(amount_scaled, randomness, owner_pk)` — the v2 note (owner-bound), the Merkle leaf.
+pub fn note_hash_v2(amount_scaled: u64, randomness: Fr, owner_pk: Fr) -> Fr {
+    hash_3(Fr::from(amount_scaled), randomness, owner_pk)
 }
 
 /// Canonical little-endian field element (refuses values at or above the modulus, like the prover does).

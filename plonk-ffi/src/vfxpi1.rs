@@ -19,6 +19,9 @@ use ark_bls12_381::Fr;
 pub const MAGIC: &[u8] = b"VFXPI1";
 pub const VERSION: u8 = 1;
 pub const VERSION_2: u8 = 2;
+/// Version 3 (v2 circuits, fund-loss re-audit Oct 2026): as version 2, plus `recipient_tag` (32) at the end of
+/// the Unshield body. Note hashes and nullifiers are the owner-bound ones.
+pub const VERSION_3: u8 = 3;
 /// Header: magic (6) + version (1) + circuit (1) = 8 bytes.
 pub const HEADER_LEN: usize = 8;
 const ASSET_OFF: usize = HEADER_LEN;
@@ -66,11 +69,19 @@ impl Circuit {
         }
     }
 
-    /// Number of public inputs the v1 circuit exposes.
+    /// Total `public_inputs` length for this circuit (version 3: version 2 plus the Unshield recipient tag).
+    pub fn total_len_v3(self) -> usize {
+        match self {
+            Circuit::Unshield => self.total_len_v2() + 32,
+            other => other.total_len_v2(),
+        }
+    }
+
+    /// Number of public inputs the v2 circuit exposes.
     pub fn public_input_count(self) -> usize {
         match self {
             Circuit::Shield => 2,
-            Circuit::Unshield => 6,
+            Circuit::Unshield => 7,
             Circuit::Transfer => 6,
             Circuit::Fee => 4,
         }
@@ -160,6 +171,74 @@ pub fn parse_public_inputs_v2(data: &[u8]) -> Result<PublicInputsV2, ()> {
     Ok(PublicInputsV2 { circuit, asset_tag, merkle_root, values })
 }
 
+/// Parses a version-3 blob (the v2 circuits' public inputs). Err when the magic, version, circuit byte, length or a
+/// field element is wrong. Unshield values: [root, null0, null1, transparent, change_hash, fee, recipient_tag].
+pub fn parse_public_inputs_v3(data: &[u8]) -> Result<PublicInputsV2, ()> {
+    if !is_vfxpi(data) || data[MAGIC.len()] != VERSION_3 {
+        return Err(());
+    }
+    let circuit = Circuit::from_byte(data[MAGIC.len() + 1]).ok_or(())?;
+    if data.len() != circuit.total_len_v3() {
+        return Err(());
+    }
+    let mut asset_tag = [0u8; 32];
+    asset_tag.copy_from_slice(&data[ASSET_OFF..ASSET_OFF + 32]);
+    let merkle_root = fr_at(data, ROOT_OFF)?;
+    let b = BODY_OFF;
+    let values = match circuit {
+        Circuit::Shield => vec![u64_at(data, b), fr_at(data, b + 8)?],
+        Circuit::Unshield => vec![
+            merkle_root,
+            fr_at(data, b + 16)?,
+            fr_at(data, b + 48)?,
+            u64_at(data, b + 8),
+            fr_at(data, b + 80)?,
+            u64_at(data, b),
+            fr_at(data, b + 112)?,
+        ],
+        Circuit::Transfer => vec![
+            merkle_root,
+            fr_at(data, b + 8)?,
+            fr_at(data, b + 40)?,
+            fr_at(data, b + 72)?,
+            fr_at(data, b + 104)?,
+            u64_at(data, b),
+        ],
+        Circuit::Fee => vec![merkle_root, fr_at(data, b + 8)?, fr_at(data, b + 40)?, u64_at(data, b)],
+    };
+    Ok(PublicInputsV2 { circuit, asset_tag, merkle_root, values })
+}
+
+/// Builds a version-3 blob from the on-chain fields (the inverse of `parse_public_inputs_v3`). `elements`:
+/// Shield [note_hash]; Unshield [null0, null1, change_hash, recipient_tag]; Transfer [null0, null1, out0, out1];
+/// Fee [null, change_hash].
+pub fn encode_public_inputs_v3(circuit: Circuit, f: &V2Fields) -> Result<Vec<u8>, ()> {
+    let expected_elems = match circuit {
+        Circuit::Shield => 1,
+        Circuit::Unshield => 4,
+        Circuit::Transfer => 4,
+        Circuit::Fee => 2,
+    };
+    if f.elements.len() != expected_elems {
+        return Err(());
+    }
+    let mut out = Vec::with_capacity(circuit.total_len_v3());
+    out.extend_from_slice(MAGIC);
+    out.push(VERSION_3);
+    out.push(circuit as u8);
+    out.extend_from_slice(&f.asset_tag);
+    out.extend_from_slice(&crate::poseidon_v1::fr_to_le(&f.merkle_root));
+    out.extend_from_slice(&f.amount_or_fee.to_le_bytes());
+    if circuit == Circuit::Unshield {
+        out.extend_from_slice(&f.transparent.to_le_bytes());
+    }
+    for e in f.elements {
+        out.extend_from_slice(&crate::poseidon_v1::fr_to_le(e));
+    }
+    debug_assert_eq!(out.len(), circuit.total_len_v3());
+    Ok(out)
+}
+
 /// Builds a version-2 blob from the on-chain fields (the inverse of `parse_public_inputs_v2`; used by tests
 /// and available to any Rust caller that wants the canonical encoding).
 pub struct V2Fields<'a> {
@@ -210,6 +289,15 @@ mod tests {
         assert_eq!(Circuit::Shield.total_len(), 8 + 32 + 32 + 8 + 48);
         assert_eq!(Circuit::Unshield.total_len(), 8 + 32 + 32 + 8 + 8 + 64 + 48);
         assert_eq!(Circuit::Fee.total_len(), 8 + 32 + 32 + 8 + 32 + 48);
+    }
+
+    #[test]
+    fn v3_lengths_and_counts() {
+        assert_eq!(Circuit::Shield.total_len_v3(), 112);
+        assert_eq!(Circuit::Unshield.total_len_v3(), 216);
+        assert_eq!(Circuit::Transfer.total_len_v3(), 208);
+        assert_eq!(Circuit::Fee.total_len_v3(), 144);
+        assert_eq!(Circuit::Unshield.public_input_count(), 7);
     }
 
     #[test]

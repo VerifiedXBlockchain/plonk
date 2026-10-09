@@ -1,4 +1,5 @@
-//! FFI exports for v1 privacy circuits (Shield, Transfer, Unshield, Fee).
+//! FFI exports for the privacy circuits (Shield, Transfer, Unshield, Fee); v2 owner-bound circuits since the
+//! Oct 2026 re-audit (params magic VXPLNK04, public inputs VFXPI1 version 3).
 //!
 //! These functions use the real PLONK circuits from `verifiedx-circuits`
 //! instead of the v0 digest-binding placeholder.
@@ -47,7 +48,10 @@ pub(crate) struct V1Loaded {
 /// Try to load v1 params from the raw bytes. Returns Ok if successful.
 pub fn try_load_v1_params(bytes: &[u8]) -> Result<(), &'static str> {
     if bytes.len() < 8 || &bytes[..8] != PARAMS_MAGIC_V1 {
-        return Err("not VXPLNK03 format");
+        if bytes.len() >= 8 && &bytes[..8] == circuit_keys::PARAMS_MAGIC_V1_CIRCUITS {
+            return Err("VXPLNK03 carries the superseded v1 circuits (notes without an owner); this library needs VXPLNK04");
+        }
+        return Err("not VXPLNK04 format");
     }
 
     let blob = ParamsBlobV1::deserialize(bytes)?;
@@ -140,11 +144,11 @@ pub fn pi_positions(circuit: Circuit) -> Vec<usize> {
 // ─── Shield FFI helpers ────────────────────────────────────────────
 
 /// Prove a Shield circuit. Returns serialized (proof, pi) or error.
-pub fn ffi_prove_shield(amount_scaled: u64, randomness_fr: Fr) -> Result<(Vec<u8>, Vec<u8>), i32> {
+pub fn ffi_prove_shield(amount_scaled: u64, randomness_fr: Fr, owner_pk: Fr) -> Result<(Vec<u8>, Vec<u8>), i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
     let pk = state.shield_pk.clone().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::prove_shield(&state.pp, pk, Fr::from(amount_scaled), randomness_fr)
+    circuit_keys::prove_shield(&state.pp, pk, Fr::from(amount_scaled), randomness_fr, owner_pk)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -215,11 +219,11 @@ pub fn ffi_verify_fee(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> 
 
 // ─── Verify from the on-chain public inputs (VFXPI1 version 2) ─────
 
-/// Verify a v1 proof against a VFXPI1 **version 2** blob: the public inputs are rebuilt from the on-chain
+/// Verify a v2-circuit proof against a VFXPI1 **version 3** blob: the public inputs are rebuilt from the on-chain
 /// fields at the circuit's own positions, so a validator never has to trust the prover's encoding.
 /// `circuit_type` must equal the blob's circuit byte. Returns Ok(false) when the proof does not verify.
-pub fn ffi_verify_vfxpi2(circuit_type: u8, proof_bytes: &[u8], pi_blob: &[u8]) -> Result<bool, i32> {
-    let parsed = vfxpi1::parse_public_inputs_v2(pi_blob).map_err(|_| crate::ERR_PARAM)?;
+pub fn ffi_verify_vfxpi3(circuit_type: u8, proof_bytes: &[u8], pi_blob: &[u8]) -> Result<bool, i32> {
+    let parsed = vfxpi1::parse_public_inputs_v3(pi_blob).map_err(|_| crate::ERR_PARAM)?;
     if parsed.circuit as u8 != circuit_type {
         return Err(crate::ERR_PARAM);
     }
@@ -264,8 +268,11 @@ pub(crate) fn read_merkle_path(data: &[u8], offset: usize) -> Result<[Fr; TREE_D
 }
 
 /// Size of one TransferInput in the flat wire format:
-/// amount(8) + randomness(32) + viewing_key(32) + position(8) + merkle_path(32*32) + merkle_indices(32*32)
+/// amount(8) + randomness(32) + nullifier_key(32) + position(8) + merkle_path(32*32) + merkle_indices(32*32)
 pub const TRANSFER_INPUT_SIZE: usize = 8 + 32 + 32 + 8 + 32 * TREE_DEPTH + 32 * TREE_DEPTH;
+
+/// Size of one TransferOutput in the flat wire format (v2): amount(8) + randomness(32) + owner_pk(32).
+pub const TRANSFER_OUTPUT_SIZE: usize = 8 + 32 + 32;
 
 /// Deserialize a TransferInput from the flat wire format.
 pub(crate) fn read_transfer_input(data: &[u8]) -> Result<TransferInput<Fr>, i32> {
@@ -274,29 +281,31 @@ pub(crate) fn read_transfer_input(data: &[u8]) -> Result<TransferInput<Fr>, i32>
     }
     let amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
     let randomness = fr_from_bytes(&data[8..40])?;
-    let viewing_key = fr_from_bytes(&data[40..72])?;
+    let nullifier_key = fr_from_bytes(&data[40..72])?;
     let position = u64::from_le_bytes(data[72..80].try_into().unwrap());
     let merkle_path = read_merkle_path(data, 80)?;
     let indices = read_merkle_path(data, 80 + 32 * TREE_DEPTH)?;
     Ok(TransferInput {
         amount_scaled: Fr::from(amount),
         randomness,
-        viewing_key,
+        nullifier_key,
         position: Fr::from(position),
         merkle_path,
         merkle_indices: indices,
     })
 }
 
-/// Deserialize a TransferOutput (amount + randomness).
+/// Deserialize a TransferOutput (amount + randomness + owner_pk).
 pub(crate) fn read_transfer_output(data: &[u8]) -> Result<TransferOutput<Fr>, i32> {
-    if data.len() < 40 {
+    if data.len() < TRANSFER_OUTPUT_SIZE {
         return Err(crate::ERR_PARAM);
     }
     let amount = u64::from_le_bytes(data[0..8].try_into().unwrap());
     let randomness = fr_from_bytes(&data[8..40])?;
+    let owner_pk = fr_from_bytes(&data[40..72])?;
     Ok(TransferOutput {
         amount_scaled: Fr::from(amount),
         randomness,
+        owner_pk,
     })
 }

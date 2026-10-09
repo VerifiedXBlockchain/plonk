@@ -1,19 +1,11 @@
 //! Nullifier derivation gadget.
 //!
-//! Nullifier = Poseidon(viewing_key, note_hash, position)
+//! `nullifier = Poseidon(nullifier_key, note_hash, position)`
 //!
-//! The circuit also proves the spending key → viewing key relationship.
-//! In v1, viewing_key = SHA256(domain_tag || spending_key) but we defer
-//! SHA256 in-circuit verification to a later step. For now, the
-//! viewing_key is a private witness that the prover must supply correctly;
-//! the nullifier published on-chain is deterministic from these inputs.
-//!
-//! Security note: without in-circuit SHA256, the prover could use an
-//! arbitrary viewing_key. The spending_key preimage check will be added
-//! as a separate gadget. For v1 launch, the viewing_key is treated as
-//! a private witness whose correctness is enforced by the fact that only
-//! the real owner can compute the correct nullifier (which is checked
-//! against the public input).
+//! v2 (fund-loss re-audit, Oct 2026): the first input is the owner's nullifier key, and the circuits also
+//! prove `owner_pk = Poseidon(OWNER_PK_DOMAIN, nullifier_key)` is the owner key inside `note_hash`, so a
+//! nullifier can only be produced by the note's owner and is unique per note. (In v1 the key was a free
+//! witness: anyone knowing the note could spend it once per key.)
 
 use ark_ec::models::TEModelParameters;
 use ark_ff::PrimeField;

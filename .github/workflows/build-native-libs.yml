@@ -1,4 +1,4 @@
-# Manual workflow: builds plonk_ffi for Windows, Linux, and macOS (artifacts per platform).
+# Manual workflow: builds plonk_ffi for Windows, Linux x86-64, Linux arm64 and macOS (artifacts per platform).
 
 name: Build Native Libraries (plonk_ffi)
 
@@ -60,6 +60,46 @@ jobs:
         with:
           name: libplonk_ffi-linux
           path: target/release/libplonk_ffi.so
+
+  build-linux-arm64:
+    # VerifiedX Core publishes linux-arm64 (its loader probes libplonk_ffi.so by name) and until now shipped the
+    # x86-64 file. Cross-compiled on the x86-64 runner with the GNU aarch64 toolchain; the crate graph is pure Rust
+    # apart from the `cc` build helper, which honours the CC_* variable below. (A native `ubuntu-24.04-arm` runner
+    # would also do and needs none of the cross setup.)
+    name: Build Linux arm64 .so
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.83.0
+          targets: aarch64-unknown-linux-gnu
+
+      - name: Install the aarch64 GNU toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Build plonk_ffi for aarch64-unknown-linux-gnu
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CC_aarch64_unknown_linux_gnu: aarch64-linux-gnu-gcc
+          CXX_aarch64_unknown_linux_gnu: aarch64-linux-gnu-g++
+          AR_aarch64_unknown_linux_gnu: aarch64-linux-gnu-ar
+        run: cargo build -p plonk_ffi --release --target aarch64-unknown-linux-gnu
+
+      - name: Check the architecture
+        run: |
+          readelf -h target/aarch64-unknown-linux-gnu/release/libplonk_ffi.so | grep -q AArch64
+          readelf -h target/aarch64-unknown-linux-gnu/release/libplonk_ffi.so | grep Machine
+
+      - name: Upload Linux arm64 .so
+        uses: actions/upload-artifact@v4
+        with:
+          name: libplonk_ffi-linux-arm64
+          path: target/aarch64-unknown-linux-gnu/release/libplonk_ffi.so
 
   build-windows:
     name: Build Windows DLL
