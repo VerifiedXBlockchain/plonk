@@ -226,6 +226,104 @@ pub fn verify_fee(
 
 // ─── Serialization helpers ─────────────────────────────────────────
 
+// ─── Public inputs from on-chain values ────────────────────────────
+//
+// A verifier that reconstructs the public inputs from the transaction (VFXPI1 v2) needs the circuit's
+// public-input gate positions. They depend only on the circuit's structure, never on the witness, so they
+// are read once by running each circuit's gadget with its default witness on a fresh composer - no key
+// generation involved. The composer stores every public input negated (`constrain_to_constant(var, 0,
+// Some(-value))`), which `public_inputs_from_values` reproduces.
+
+fn positions_of<C>(mut circuit: C) -> Vec<usize>
+where
+    C: Circuit<Fr, EdwardsParameters>,
+{
+    // The composer records the gate index of every public input it was given (`intended_pi_pos`); the
+    // circuits' own `pi_pos` fields are not those indices (they are read off `circuit_bound()`, which
+    // rounds up to a power of two) and must not be used for this.
+    let mut composer = plonk_core::constraint_system::StandardComposer::<Fr, EdwardsParameters>::new();
+    circuit.gadget(&mut composer).expect("default circuit gadget");
+    composer.intended_pi_positions().to_vec()
+}
+
+/// Public-input positions of the Shield circuit: [amount, note_hash].
+pub fn pi_positions_shield() -> Vec<usize> {
+    positions_of(ShieldCircuit::<Fr>::default())
+}
+
+/// Public-input positions of the Transfer circuit: [root, null0, null1, out_hash0, out_hash1, fee].
+pub fn pi_positions_transfer() -> Vec<usize> {
+    positions_of(TransferCircuit::<Fr>::default())
+}
+
+/// Public-input positions of the Unshield circuit: [root, null0, null1, transparent, change_hash, fee].
+pub fn pi_positions_unshield() -> Vec<usize> {
+    positions_of(UnshieldCircuit::<Fr>::default())
+}
+
+/// Public-input positions of the Fee circuit: [root, nullifier, change_hash, fee].
+pub fn pi_positions_fee() -> Vec<usize> {
+    positions_of(FeeCircuit::<Fr>::default())
+}
+
+/// The `PublicInputs` a proof was made against, from the un-negated public values in circuit order.
+pub fn public_inputs_from_values(positions: &[usize], values: &[Fr]) -> Result<PublicInputs<Fr>, Error> {
+    if positions.len() != values.len() {
+        return Err(Error::InvalidPublicInputValue);
+    }
+    let mut seen = std::collections::HashSet::new();
+    if !positions.iter().all(|p| seen.insert(*p)) {
+        return Err(Error::InvalidPublicInputValue); // from_val_pos would panic on a duplicate position
+    }
+    let negated: Vec<Fr> = values.iter().map(|v| -*v).collect();
+    PublicInputs::from_val_pos(positions, &negated)
+}
+
+/// Verify a Shield proof against already-built public inputs.
+pub fn verify_shield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
+    let proof = deserialize_proof(proof_bytes)?;
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_SHIELD_V1") {
+        Ok(()) => Ok(true),
+        Err(Error::ProofVerificationError) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Verify a Transfer proof against already-built public inputs.
+pub fn verify_transfer_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
+    let proof = deserialize_proof(proof_bytes)?;
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_TRANSFER_V1") {
+        Ok(()) => Ok(true),
+        Err(Error::ProofVerificationError) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Verify an Unshield proof against already-built public inputs.
+pub fn verify_unshield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
+    let proof = deserialize_proof(proof_bytes)?;
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_UNSHIELD_V1") {
+        Ok(()) => Ok(true),
+        Err(Error::ProofVerificationError) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Verify a Fee proof against already-built public inputs.
+pub fn verify_fee_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
+    let proof = deserialize_proof(proof_bytes)?;
+    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_FEE_V1") {
+        Ok(()) => Ok(true),
+        Err(Error::ProofVerificationError) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Deserialize the prover's own `PublicInputs` encoding (what `plonk_prove_*` returns).
+pub fn deserialize_public_inputs(bytes: &[u8]) -> Result<PublicInputs<Fr>, Error> {
+    deserialize_pi(bytes)
+}
+
 fn serialize_proof(proof: &Proof<Fr, PC>) -> Result<Vec<u8>, Error> {
     let mut buf = Vec::new();
     proof

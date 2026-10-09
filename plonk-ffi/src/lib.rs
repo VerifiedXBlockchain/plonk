@@ -2,11 +2,12 @@
 //! `plonk_verify` validates `PlonkPublicInputsV1` (VFXPI1), then — if `VXPLNK01` params were loaded — runs **v0** PLONK verify
 //! (`verifiedx-circuits`: SHA-256 digest binding to the PI blob; not full Pedersen/Merkle/nullifier logic yet).
 
-mod circuits_v1;
+pub mod circuits_v1;
 mod merkle;
 mod pedersen;
 mod poseidon_hash;
-mod vfxpi1;
+pub mod poseidon_v1;
+pub mod vfxpi1;
 
 use std::ffi::CStr;
 use std::os::raw::c_char;
@@ -42,6 +43,10 @@ pub const PLONK_CAP_PROVE_V1: u32 = 4;
 pub const PLONK_CAP_V1_CIRCUITS: u32 = 8;
 /// Bit 4: v1 prover keys available.
 pub const PLONK_CAP_V1_PROVE: u32 = 16;
+/// Bit 5: `plonk_verify` accepts VFXPI1 **version 2** public inputs for the v1 circuits (rebuilt at the circuits'
+/// positions from on-chain fields), and the circuit-compatible Poseidon exports (`poseidon_hash_2`, `poseidon_hash_3`,
+/// `poseidon_note_hash`, `merkle_root_from_path_v1`, `poseidon_merkle_zero`) exist. Matches C# `PlonkNative.CapVfxPi2Verify`.
+pub const PLONK_CAP_VFXPI2_VERIFY: u32 = 32;
 
 #[no_mangle]
 pub extern "C" fn plonk_capabilities() -> u32 {
@@ -56,7 +61,7 @@ pub extern "C" fn plonk_capabilities() -> u32 {
     drop(guard);
     // v1 real circuit capabilities
     if circuits_v1::is_v1_loaded() {
-        c |= PLONK_CAP_V1_CIRCUITS;
+        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY;
         if circuits_v1::has_v1_prover_keys() {
             c |= PLONK_CAP_V1_PROVE;
         }
@@ -304,6 +309,97 @@ pub unsafe extern "C" fn nullifier_derive_v1(
     }
 }
 
+// ─── Circuit-compatible Poseidon (v1) ─────────────────────────────────────────────────────────────────
+//
+// Every field element crosses as 32 little-endian bytes in arkworks canonical form (the same encoding the
+// `plonk_prove_*` witness blobs use); a value at or above the modulus is refused with ERR_CRYPTO.
+
+fn read_fr(ptr: *const u8) -> Result<ark_bls12_381::Fr, i32> {
+    if ptr.is_null() {
+        return Err(ERR_NULL);
+    }
+    let s = unsafe { std::slice::from_raw_parts(ptr, FR_LEN) };
+    poseidon_v1::fr_from_le_canonical(s).map_err(|_| ERR_CRYPTO)
+}
+
+fn write_fr(fr: &ark_bls12_381::Fr, out: *mut u8) -> i32 {
+    if out.is_null() {
+        return ERR_NULL;
+    }
+    let bytes = poseidon_v1::fr_to_le(fr);
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, FR_LEN) };
+    SUCCESS
+}
+
+/// `out = Poseidon(a, b)` exactly as the v1 circuits compute it (the Merkle parent hash).
+#[no_mangle]
+pub extern "C" fn poseidon_hash_2(a: *const u8, b: *const u8, hash_out: *mut u8) -> i32 {
+    let (a, b) = match (read_fr(a), read_fr(b)) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => return e,
+    };
+    write_fr(&poseidon_v1::hash_2(a, b), hash_out)
+}
+
+/// `out = Poseidon(a, b, c)` exactly as the v1 circuits compute it (chained from zero).
+#[no_mangle]
+pub extern "C" fn poseidon_hash_3(a: *const u8, b: *const u8, c: *const u8, hash_out: *mut u8) -> i32 {
+    let (a, b, c) = match (read_fr(a), read_fr(b), read_fr(c)) {
+        (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return e,
+    };
+    write_fr(&poseidon_v1::hash_3(a, b, c), hash_out)
+}
+
+/// `note_hash = Poseidon(amount_scaled, randomness)`: the Merkle leaf the v1 circuits bind.
+#[no_mangle]
+pub extern "C" fn poseidon_note_hash(amount_scaled: u64, randomness: *const u8, hash_out: *mut u8) -> i32 {
+    let r = match read_fr(randomness) {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
+    write_fr(&poseidon_v1::note_hash(amount_scaled, r), hash_out)
+}
+
+/// The digest of an empty subtree of height `level` (0 = an empty leaf, i.e. the zero field element), used to
+/// pad the fixed-depth-32 tree the v1 circuits prove against.
+#[no_mangle]
+pub extern "C" fn poseidon_merkle_zero(level: u32, hash_out: *mut u8) -> i32 {
+    if level as usize > poseidon_v1::TREE_DEPTH {
+        return ERR_PARAM;
+    }
+    let zeros = poseidon_v1::zero_hashes();
+    write_fr(&zeros[level as usize], hash_out)
+}
+
+/// Recomputes the root from `leaf`, its `position` and a `TREE_DEPTH` x 32-byte sibling path (bottom-up),
+/// exactly as the circuits' `merkle_path_verify` does.
+#[no_mangle]
+pub extern "C" fn merkle_root_from_path_v1(leaf: *const u8, position: u64, path: *const u8, path_len: usize, root_out: *mut u8) -> i32 {
+    if path.is_null() {
+        return ERR_NULL;
+    }
+    if path_len != FR_LEN * poseidon_v1::TREE_DEPTH {
+        return ERR_PARAM;
+    }
+    let leaf = match read_fr(leaf) {
+        Ok(l) => l,
+        Err(e) => return e,
+    };
+    let bytes = unsafe { std::slice::from_raw_parts(path, path_len) };
+    let mut siblings = Vec::with_capacity(poseidon_v1::TREE_DEPTH);
+    for i in 0..poseidon_v1::TREE_DEPTH {
+        match poseidon_v1::fr_from_le_canonical(&bytes[i * FR_LEN..(i + 1) * FR_LEN]) {
+            Ok(f) => siblings.push(f),
+            Err(_) => return ERR_CRYPTO,
+        }
+    }
+    match poseidon_v1::root_from_path(leaf, position, &siblings) {
+        Ok(root) => write_fr(&root, root_out),
+        Err(_) => ERR_PARAM,
+    }
+}
+
 #[no_mangle]
 pub extern "C" fn plonk_verify(
     circuit_type: u8,
@@ -324,6 +420,19 @@ pub extern "C" fn plonk_verify(
 
     // Try v1 real circuits first (if loaded)
     if circuits_v1::is_v1_loaded() {
+        // A VFXPI1 blob: version 2 is rebuilt at the circuits' positions from the on-chain fields (what validators
+        // send); version 1 carried G1 commitments the v1 circuits do not bind and cannot be verified against them.
+        if vfxpi1::is_vfxpi(pi_slice) {
+            if vfxpi1::version(pi_slice) != Some(vfxpi1::VERSION_2) {
+                return ERR_PARAM;
+            }
+            return match circuits_v1::ffi_verify_vfxpi2(circuit_type, proof_slice, pi_slice) {
+                Ok(true) => 1,
+                Ok(false) => 0,
+                Err(e) => e,
+            };
+        }
+        // Otherwise the prover's own PublicInputs encoding (what plonk_prove_* returns).
         let result = match circuit_type {
             1 => circuits_v1::ffi_verify_shield(proof_slice, pi_slice),
             0 => circuits_v1::ffi_verify_transfer(proof_slice, pi_slice),

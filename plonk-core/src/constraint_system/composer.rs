@@ -151,6 +151,13 @@ where
         &self.public_inputs
     }
 
+    /// Every gate position the circuit reserved for a public input, in insertion order - including
+    /// positions whose value happened to be zero (which [`PublicInputs`] omits). This is what a
+    /// verifier needs to rebuild the public inputs of a proof from values it reconstructs itself.
+    pub fn intended_pi_positions(&self) -> &[usize] {
+        &self.intended_pi_pos
+    }
+
     /// Insert data in the PI starting at the given position and stores the
     /// occupied positions as intended for public inputs.
     pub(crate) fn add_pi<T>(
