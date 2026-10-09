@@ -75,7 +75,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.83.0
-          targets: aarch64-unknown-linux-gnu
+
+      # rust-toolchain.toml pins 1.85.0, so cargo in the repository uses THAT toolchain, not the action's: the target
+      # must be added from inside the checkout (as the macOS job does), or 1.85.0 has no aarch64 std ("can't find crate
+      # for `core`").
+      - name: Add the aarch64 target to the repository's toolchain
+        run: rustup target add aarch64-unknown-linux-gnu
 
       - name: Install the aarch64 GNU toolchain
         run: |
