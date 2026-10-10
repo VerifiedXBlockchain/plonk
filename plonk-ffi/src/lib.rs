@@ -47,7 +47,7 @@ pub const PLONK_CAP_V1_PROVE: u32 = 16;
 /// positions from on-chain fields), and the circuit-compatible Poseidon exports (`poseidon_hash_2`, `poseidon_hash_3`,
 /// `poseidon_note_hash`, `merkle_root_from_path_v1`, `poseidon_merkle_zero`) exist. Matches C# `PlonkNative.CapVfxPi2Verify`.
 pub const PLONK_CAP_VFXPI2_VERIFY: u32 = 32;
-/// Bit 6: the v2 owner-bound circuits are loaded (`VXPLNK04`): notes carry an owner key, spends prove the owner's
+/// Bit 6: the v2 owner-bound circuits are loaded (`VXPLNK05`, Zcash Powers of Tau): notes carry an owner key, spends prove the owner's
 /// nullifier key, the Unshield binds its recipient, and `plonk_verify` takes VFXPI1 **version 3** blobs. The
 /// witness formats of `plonk_prove_*` are the v2 ones (see each function), `plonk_prove_shield` takes `owner_pk`,
 /// and `poseidon_owner_pk` / `poseidon_note_hash_v2` exist. Matches C# `PlonkNative.CapV2Circuits`.
@@ -86,9 +86,11 @@ pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
     };
     match std::fs::read(path) {
         Ok(bytes) => {
-            // The circuit params (VXPLNK04: v2 owner-bound circuits) first. VXPLNK03 (the superseded v1 circuits) is
-            // refused outright: nothing may verify or prove against ownerless notes any more.
-            if bytes.len() >= 8 && (&bytes[..8] == verifiedx_circuits::circuit_keys::PARAMS_MAGIC_V1 || &bytes[..8] == verifiedx_circuits::circuit_keys::PARAMS_MAGIC_V1_CIRCUITS) {
+            // The circuit params (VXPLNK05: v2 owner-bound circuits over the Zcash Powers of Tau) first. VXPLNK03 (the
+            // superseded v1 circuits) and VXPLNK04 (the seeded, forgeable setup) are refused outright.
+            if bytes.len() >= 8 && (&bytes[..8] == verifiedx_circuits::circuit_keys::PARAMS_MAGIC_V1
+                || &bytes[..8] == verifiedx_circuits::circuit_keys::PARAMS_MAGIC_V1_CIRCUITS
+                || &bytes[..8] == verifiedx_circuits::circuit_keys::PARAMS_MAGIC_SEEDED) {
                 match circuits_v1::try_load_v1_params(&bytes) {
                     Ok(()) => {
                         *PARAMS.lock().unwrap() = bytes;

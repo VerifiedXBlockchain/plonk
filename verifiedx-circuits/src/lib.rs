@@ -22,6 +22,7 @@ pub mod gadgets;
 pub mod circuits;
 pub mod circuit_keys;
 pub mod v0_pi_binding;
+pub mod zcash_setup;
 
 /// Amount scaling factor: 10^18 (matches C# `AmountConverter.SCALING_FACTOR`).
 pub const SCALING_FACTOR: u128 = 1_000_000_000_000_000_000;
@@ -38,16 +39,18 @@ pub use v0_pi_binding::{trusted_setup_v0, VfxPlonkParamsBlob, verify_vfxpi_v0, p
 ///
 /// `include_prover_keys`: if true, prover keys are included (larger file, needed for proving).
 /// If false, only verifier keys are included (smaller file, sufficient for validators).
+type KZG10<E> = plonk_core::commitment::KZG10<E>;
+
+/// **INSECURE: for tests only.** The universal parameters are generated from a constant seed, so tau is public and any
+/// statement can be proven. Blobs from here are written with magic `VXPLNK04`, which the node library refuses to load.
 pub fn trusted_setup_v1(
     include_prover_keys: bool,
 ) -> Result<circuit_keys::ParamsBlobV1, Box<dyn std::error::Error>> {
     use ark_bls12_381::Bls12_381;
     use ark_poly_commit::PolynomialCommitment;
-    use ark_serialize::CanonicalSerialize;
-    use plonk_core::commitment::KZG10;
     use rand::SeedableRng;
 
-    type PC = KZG10<Bls12_381>;
+    type PC = plonk_core::commitment::KZG10<Bls12_381>;
 
     // Generate universal params large enough for the biggest circuit (Transfer at 2^15)
     // Deterministic seed for reproducible setup
@@ -58,63 +61,46 @@ pub fn trusted_setup_v1(
         &mut rng,
     ).map_err(|e| format!("KZG setup failed: {:?}", e))?;
 
-    // Compile all circuits
-    let keys = circuit_keys::compile_all_circuits(&pp, include_prover_keys)?;
+    blob_from_params(&pp, include_prover_keys)
+}
 
-    // Serialize universal params
+/// Compiles the circuits against `pp` and packs universal params + keys into the params blob (no magic: the caller's
+/// `ParamsBlobV1::serialize_with_magic` says which setup produced it).
+pub fn blob_from_params(
+    pp: &<KZG10<ark_bls12_381::Bls12_381> as ark_poly_commit::PolynomialCommitment<ark_bls12_381::Fr, ark_poly::univariate::DensePolynomial<ark_bls12_381::Fr>>>::UniversalParams,
+    include_prover_keys: bool,
+) -> Result<circuit_keys::ParamsBlobV1, Box<dyn std::error::Error>> {
+    use ark_serialize::CanonicalSerialize;
+    let keys = circuit_keys::compile_all_circuits(pp, include_prover_keys)?;
     let mut pp_bytes = Vec::new();
     pp.serialize(&mut pp_bytes)?;
-
-    // Serialize circuit keys
-    let mut shield_vk_bytes = Vec::new();
-    keys.shield_vk.serialize(&mut shield_vk_bytes)?;
-    let shield_pk_bytes = if let Some(ref pk) = keys.shield_pk {
+    fn ser<T: CanonicalSerialize>(t: &T) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
         let mut b = Vec::new();
-        pk.serialize(&mut b)?;
-        Some(b)
-    } else {
-        None
-    };
-
-    let mut transfer_vk_bytes = Vec::new();
-    keys.transfer_vk.serialize(&mut transfer_vk_bytes)?;
-    let transfer_pk_bytes = if let Some(ref pk) = keys.transfer_pk {
-        let mut b = Vec::new();
-        pk.serialize(&mut b)?;
-        Some(b)
-    } else {
-        None
-    };
-
-    let mut unshield_vk_bytes = Vec::new();
-    keys.unshield_vk.serialize(&mut unshield_vk_bytes)?;
-    let unshield_pk_bytes = if let Some(ref pk) = keys.unshield_pk {
-        let mut b = Vec::new();
-        pk.serialize(&mut b)?;
-        Some(b)
-    } else {
-        None
-    };
-
-    let mut fee_vk_bytes = Vec::new();
-    keys.fee_vk.serialize(&mut fee_vk_bytes)?;
-    let fee_pk_bytes = if let Some(ref pk) = keys.fee_pk {
-        let mut b = Vec::new();
-        pk.serialize(&mut b)?;
-        Some(b)
-    } else {
-        None
-    };
-
+        t.serialize(&mut b)?;
+        Ok(b)
+    }
+    fn ser_opt<T: CanonicalSerialize>(t: &Option<T>) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error>> {
+        Ok(match t { Some(v) => Some(ser(v)?), None => None })
+    }
     Ok(circuit_keys::ParamsBlobV1 {
         universal_params: pp_bytes,
-        shield_vk: shield_vk_bytes,
-        shield_pk: shield_pk_bytes,
-        transfer_vk: transfer_vk_bytes,
-        transfer_pk: transfer_pk_bytes,
-        unshield_vk: unshield_vk_bytes,
-        unshield_pk: unshield_pk_bytes,
-        fee_vk: fee_vk_bytes,
-        fee_pk: fee_pk_bytes,
+        shield_vk: ser(&keys.shield_vk)?,
+        shield_pk: ser_opt(&keys.shield_pk)?,
+        transfer_vk: ser(&keys.transfer_vk)?,
+        transfer_pk: ser_opt(&keys.transfer_pk)?,
+        unshield_vk: ser(&keys.unshield_vk)?,
+        unshield_pk: ser_opt(&keys.unshield_pk)?,
+        fee_vk: ser(&keys.fee_vk)?,
+        fee_pk: ser_opt(&keys.fee_pk)?,
     })
+}
+
+/// Production params: the universal parameters come from the Zcash Sapling Powers of Tau (`phase1radix2m{k}` file,
+/// k >= 16), whose secret is gone; the circuit keys are compiled against them. Written with magic `VXPLNK05`.
+pub fn trusted_setup_from_zcash(
+    phase1radix: &[u8],
+    include_prover_keys: bool,
+) -> Result<(circuit_keys::ParamsBlobV1, zcash_setup::ImportReport), Box<dyn std::error::Error>> {
+    let (pp, report) = zcash_setup::universal_params_from_phase1radix(phase1radix, circuit_keys::MAX_CIRCUIT_SIZE)?;
+    Ok((blob_from_params(&pp, include_prover_keys)?, report))
 }

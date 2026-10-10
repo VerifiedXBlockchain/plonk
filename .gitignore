@@ -9,3 +9,7 @@ refactor_notes
 .DS_Store
 Privacy_Layer_Implementation_Plan.md
 privacy_progress.md
+
+# Zcash Powers of Tau inputs and generated params (large; not committed)
+setup/phase1radix*
+*.params

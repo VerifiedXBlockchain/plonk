@@ -351,11 +351,13 @@ fn deserialize_pi(bytes: &[u8]) -> Result<PublicInputs<Fr>, Error> {
 
 // ─── Params blob (v1) ──────────────────────────────────────────────
 
-/// Magic bytes of the circuit params blob. `VXPLNK03` carried the v1 circuits (notes without an owner);
-/// `VXPLNK04` carries the v2 owner-bound circuits (fund-loss re-audit, Oct 2026). The blob layout is unchanged.
-pub const PARAMS_MAGIC_V1: &[u8; 8] = b"VXPLNK04";
-/// The superseded v1-circuit magic, refused by the loader.
+/// Magic bytes of the circuit params blob the node loads: `VXPLNK05` = v2 owner-bound circuits over the Zcash Powers of
+/// Tau universal parameters (`zcash_setup`). The blob layout is the same for every magic.
+pub const PARAMS_MAGIC_V1: &[u8; 8] = b"VXPLNK05";
+/// The superseded v1-circuit magic (ownerless notes), refused by the loader.
 pub const PARAMS_MAGIC_V1_CIRCUITS: &[u8; 8] = b"VXPLNK03";
+/// The v2 circuits over the SEEDED (public-tau) setup: test-only, refused by the loader.
+pub const PARAMS_MAGIC_SEEDED: &[u8; 8] = b"VXPLNK04";
 
 /// Serialized params blob containing universal params + circuit keys.
 pub struct ParamsBlobV1 {
@@ -374,8 +376,13 @@ impl ParamsBlobV1 {
     /// Serialize to bytes: magic (8) + sections.
     /// Each section: length (4 LE) + data. Optional sections use 0 length for absent.
     pub fn serialize(&self) -> Vec<u8> {
+        self.serialize_with_magic(PARAMS_MAGIC_V1)
+    }
+
+    /// As `serialize`, under an explicit magic (`PARAMS_MAGIC_SEEDED` for the test-only seeded setup).
+    pub fn serialize_with_magic(&self, magic: &[u8; 8]) -> Vec<u8> {
         let mut out = Vec::new();
-        out.extend_from_slice(PARAMS_MAGIC_V1);
+        out.extend_from_slice(magic);
 
         // Universal params
         write_section(&mut out, &self.universal_params);
@@ -398,7 +405,7 @@ impl ParamsBlobV1 {
 
     /// Deserialize from bytes.
     pub fn deserialize(data: &[u8]) -> Result<Self, &'static str> {
-        if data.len() < 8 || &data[..8] != PARAMS_MAGIC_V1 {
+        if data.len() < 8 || (&data[..8] != PARAMS_MAGIC_V1 && &data[..8] != PARAMS_MAGIC_SEEDED) {
             return Err("invalid magic");
         }
         let mut cursor = 8;

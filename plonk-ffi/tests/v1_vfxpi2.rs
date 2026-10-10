@@ -1,6 +1,6 @@
 //! End-to-end tests of the v2 owner-bound circuits against the on-chain public-input encoding (VFXPI1 version 3)
-//! and the circuit-compatible native Poseidon. They need the `VXPLNK04` params with prover keys: set
-//! `VFX_PLONK_PARAMS` to the file, or place `vfx_plonk_v2.params` in the workspace root. Without it every test
+//! and the circuit-compatible native Poseidon. They need the `VXPLNK05` params with prover keys: set
+//! `VFX_PLONK_PARAMS` to the file, or place `vfx_plonk_v3.params` in the workspace root. Without it every test
 //! here returns early (and says so), so `cargo test` stays green on machines without the file.
 //!
 //! What they pin down for the Core node and wallet:
@@ -27,7 +27,7 @@ static mut LOADED: bool = false;
 fn params_loaded() -> bool {
     LOAD.call_once(|| {
         let path = std::env::var("VFX_PLONK_PARAMS").ok().or_else(|| {
-            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("vfx_plonk_v2.params");
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("vfx_plonk_v3.params");
             p.exists().then(|| p.to_string_lossy().into_owned())
         });
         let Some(path) = path else {
@@ -35,7 +35,7 @@ fn params_loaded() -> bool {
             return;
         };
         let bytes = std::fs::read(&path).expect("read params");
-        circuits_v1::try_load_v1_params(&bytes).expect("load VXPLNK04");
+        circuits_v1::try_load_v1_params(&bytes).expect("load VXPLNK05");
         unsafe { LOADED = circuits_v1::has_v1_prover_keys() };
         if !unsafe { LOADED } {
             eprintln!("v1_vfxpi2: params carry no prover keys; tests skipped");
@@ -377,11 +377,11 @@ fn fee_verifies_against_vfxpi3() {
 
 // ─── The FFI surface itself ───────────────────────────────────────────────────────────────────────────
 
-/// The C entry point the node uses (`plonk_load_params`) must take the VXPLNK04 file and report the v2 bits, and must
-/// refuse a VXPLNK03 file. (Stage 3 regression: the dispatcher once matched the old magic only, so the new file "loaded"
+/// The C entry point the node uses (`plonk_load_params`) must take the VXPLNK05 file and report the v2 bits, and must
+/// refuse VXPLNK03 (ownerless circuits) and VXPLNK04 (seeded setup) files. (Stage 3 regression: the dispatcher once matched the old magic only, so the new file "loaded"
 /// without loading any circuit.)
 #[test]
-fn plonk_load_params_takes_vxplnk04_and_reports_the_v2_capabilities() {
+fn plonk_load_params_takes_vxplnk05_and_reports_the_v2_capabilities() {
     let Some(path) = std::env::var("VFX_PLONK_PARAMS").ok().filter(|p| std::path::Path::new(p).exists()) else {
         eprintln!("plonk_load_params test: no VFX_PLONK_PARAMS; skipped");
         return;
@@ -393,14 +393,18 @@ fn plonk_load_params_takes_vxplnk04_and_reports_the_v2_capabilities() {
     assert_ne!(caps & plonk_ffi::PLONK_CAP_VFXPI2_VERIFY, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V2_CIRCUITS, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V1_PROVE, 0, "the params carry prover keys");
-    // A VXPLNK03 header (the v1 circuits) is refused.
+    // A VXPLNK03 header (the v1 circuits) and a VXPLNK04 header (the seeded, forgeable setup) are refused.
     let mut old = std::fs::read(&path).unwrap();
-    old[..8].copy_from_slice(b"VXPLNK03");
-    let tmp = std::env::temp_dir().join("vfx_plonk_v1_rejected.params");
-    std::fs::write(&tmp, &old).unwrap();
-    let c_tmp = std::ffi::CString::new(tmp.to_string_lossy().into_owned()).unwrap();
-    assert_eq!(plonk_ffi::plonk_load_params(c_tmp.as_ptr()), plonk_ffi::ERR_CRYPTO);
-    let _ = std::fs::remove_file(&tmp);
+    for magic in [b"VXPLNK03", b"VXPLNK04"] {
+        old[..8].copy_from_slice(magic);
+        let tmp = std::env::temp_dir().join("vfx_plonk_rejected.params");
+        std::fs::write(&tmp, &old).unwrap();
+        let c_tmp = std::ffi::CString::new(tmp.to_string_lossy().into_owned()).unwrap();
+        assert_eq!(plonk_ffi::plonk_load_params(c_tmp.as_ptr()), plonk_ffi::ERR_CRYPTO, "{:?}", std::str::from_utf8(magic));
+        let _ = std::fs::remove_file(&tmp);
+    }
+    // Re-load the real file so later tests in this process keep working.
+    assert_eq!(plonk_ffi::plonk_load_params(c_path.as_ptr()), plonk_ffi::SUCCESS);
 }
 
 #[test]

@@ -4,6 +4,11 @@ The following are just a few examples, we will start keeping a change log for re
 
 # Unreleased
 
+- **Trusted setup (re-audit, 9 Oct 2026).** `trusted_setup_v1` seeds the KZG setup from a constant, so its tau is public
+  and any statement can be proven against it: VXPLNK03 and VXPLNK04 are forgeable. `zcash_setup` imports the Zcash
+  Sapling Powers of Tau (`phase1radix2m{k}`, k >= 16): Lagrange points → monomial powers by a group FFT, generator and
+  pairing checks, gamma = 1 (hiding unused). `vfx_plonk_setup --zcash <file>` writes **`VXPLNK05`**; the seeded setup is
+  `--insecure-seeded` and writes `VXPLNK04`, which `plonk_load_params` refuses along with `VXPLNK03`.
 - **v2 owner-bound circuits (VerifiedX fund-loss re-audit, Oct 2026).** A note is `Poseidon(amount, randomness, owner_pk)`
   with `owner_pk = Poseidon(OWNER_PK_DOMAIN, nullifier_key)`; a spend proves knowledge of the owner's nullifier key, so
   only the owner can spend a note and its nullifier is unique (v1 let anyone who knew a note spend it once per key).
