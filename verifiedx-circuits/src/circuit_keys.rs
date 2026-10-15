@@ -351,9 +351,11 @@ fn deserialize_pi(bytes: &[u8]) -> Result<PublicInputs<Fr>, Error> {
 
 // ─── Params blob (v1) ──────────────────────────────────────────────
 
-/// Magic bytes of the circuit params blob the node loads: `VXPLNK05` = v2 owner-bound circuits over the Zcash Powers of
+/// Magic bytes of the circuit params blob the node loads: `VXPLNK06` = v2 owner-bound circuits over the Zcash Powers of
 /// Tau universal parameters (`zcash_setup`). The blob layout is the same for every magic.
-pub const PARAMS_MAGIC_V1: &[u8; 8] = b"VXPLNK05";
+pub const PARAMS_MAGIC_V1: &[u8; 8] = b"VXPLNK06";
+/// The keys of the spend circuits before a spend's position was bound to its Merkle path, refused by the loader.
+pub const PARAMS_MAGIC_FREE_POSITION: &[u8; 8] = b"VXPLNK05";
 /// The superseded v1-circuit magic (ownerless notes), refused by the loader.
 pub const PARAMS_MAGIC_V1_CIRCUITS: &[u8; 8] = b"VXPLNK03";
 /// The v2 circuits over the SEEDED (public-tau) setup: test-only, refused by the loader.

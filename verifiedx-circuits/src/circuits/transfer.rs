@@ -129,6 +129,18 @@ where
         idx_vars[j] = composer.add_input(inp.merkle_indices[j]);
     }
 
+    // The position is the path's direction bits read as a number (bit j = level j, the leaf's level first; the bits are
+    // made boolean in merkle_path_verify). Without this the position, and so the nullifier, was free: one note gave as
+    // many nullifiers as positions. Depth 32 keeps the sum far below the field modulus.
+    let mut position_from_path = composer.zero_var();
+    let mut weight = F::one();
+    for j in 0..TREE_DEPTH {
+        let acc = position_from_path;
+        position_from_path = composer.arithmetic_gate(|gate| gate.witness(acc, idx_vars[j], None).add(F::one(), weight));
+        weight.double_in_place();
+    }
+    composer.assert_equal(pos_var, position_from_path);
+
     // owner_pk = Poseidon(DOMAIN, nk); note_hash = Poseidon(amount, randomness, owner_pk)
     let owner_pk = owner_pk_gadget(composer, nk_var);
     let note_hash = note_hash_v2_gadget(composer, amount_var, randomness_var, owner_pk);

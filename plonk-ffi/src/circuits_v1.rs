@@ -1,5 +1,6 @@
 //! FFI exports for the privacy circuits (Shield, Transfer, Unshield, Fee); v2 owner-bound circuits since the
-//! Oct 2026 re-audit (params magic VXPLNK05 = v2 circuits over the Zcash Powers of Tau; public inputs VFXPI1 version 3).
+//! Oct 2026 re-audit (params magic VXPLNK06 = v2 circuits over the Zcash Powers of Tau, spend position bound to the
+//! Merkle path; public inputs VFXPI1 version 3).
 //!
 //! These functions use the real PLONK circuits from `verifiedx-circuits`
 //! instead of the v0 digest-binding placeholder.
@@ -49,12 +50,15 @@ pub(crate) struct V1Loaded {
 pub fn try_load_v1_params(bytes: &[u8]) -> Result<(), &'static str> {
     if bytes.len() < 8 || &bytes[..8] != PARAMS_MAGIC_V1 {
         if bytes.len() >= 8 && &bytes[..8] == circuit_keys::PARAMS_MAGIC_V1_CIRCUITS {
-            return Err("VXPLNK03 carries the superseded v1 circuits (notes without an owner); this library needs VXPLNK05");
+            return Err("VXPLNK03 carries the superseded v1 circuits (notes without an owner); this library needs VXPLNK06");
         }
         if bytes.len() >= 8 && &bytes[..8] == circuit_keys::PARAMS_MAGIC_SEEDED {
-            return Err("VXPLNK04 was made with the seeded setup (public tau, forgeable proofs); this library needs VXPLNK05 (Zcash Powers of Tau)");
+            return Err("VXPLNK04 was made with the seeded setup (public tau, forgeable proofs); this library needs VXPLNK06 (Zcash Powers of Tau)");
         }
-        return Err("not VXPLNK05 format");
+        if bytes.len() >= 8 && &bytes[..8] == circuit_keys::PARAMS_MAGIC_FREE_POSITION {
+            return Err("VXPLNK05 carries spend circuits whose position is not bound to the Merkle path; this library needs VXPLNK06");
+        }
+        return Err("not VXPLNK06 format");
     }
 
     let blob = ParamsBlobV1::deserialize(bytes)?;

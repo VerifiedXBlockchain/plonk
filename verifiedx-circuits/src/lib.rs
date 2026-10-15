@@ -96,7 +96,7 @@ pub fn blob_from_params(
 }
 
 /// Production params: the universal parameters come from the Zcash Sapling Powers of Tau (`phase1radix2m{k}` file,
-/// k >= 16), whose secret is gone; the circuit keys are compiled against them. Written with magic `VXPLNK05`.
+/// k >= 16), whose secret is gone; the circuit keys are compiled against them. Written with magic `VXPLNK06`.
 pub fn trusted_setup_from_zcash(
     phase1radix: &[u8],
     include_prover_keys: bool,

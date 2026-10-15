@@ -7,7 +7,7 @@
 //!   --v0           Generate legacy VXPLNK01/02 format (v0 digest binding)
 //!   --verify-only  Omit prover keys (smaller file, validator-only)
 //!
-//! Default (`--zcash <phase1radix>`): VXPLNK05, v2 owner-bound circuits over the Zcash Powers of Tau.
+//! Default (`--zcash <phase1radix>`): VXPLNK06, v2 owner-bound circuits over the Zcash Powers of Tau.
 //! `--insecure-seeded`: VXPLNK04 from the seeded setup (tests only; the node refuses it).
 //!   Default output: vfx_plonk_v1.params (or vfx_plonk_v0.params for --v0)
 
@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if use_v0 {
                 PathBuf::from("vfx_plonk_v0.params")
             } else if zcash.is_some() {
-                PathBuf::from("vfx_plonk_v3.params")
+                PathBuf::from("vfx_plonk_v4.params")
             } else {
                 PathBuf::from("vfx_plonk_seeded.params")
             }
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let out_bytes = blob.serialize();
         fs::write(&out, &out_bytes)?;
         eprintln!(
-            "Wrote {} bytes to {} (VXPLNK05: v2 circuits over Zcash Powers of Tau; domain {}, {} powers kept, {} pairing checks; {} prover keys).",
+            "Wrote {} bytes to {} (VXPLNK06: v2 circuits over Zcash Powers of Tau; domain {}, {} powers kept, {} pairing checks; {} prover keys).",
             out_bytes.len(),
             out.display(),
             report.domain_size,
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         if !insecure_seeded {
             eprintln!("Refusing to write production params from the seeded setup (its tau is public).");
-            eprintln!("Use: vfx_plonk_setup --zcash <phase1radix2m16 or larger> [out]   (production, VXPLNK05)");
+            eprintln!("Use: vfx_plonk_setup --zcash <phase1radix2m16 or larger> [out]   (production, VXPLNK06)");
             eprintln!("     vfx_plonk_setup --insecure-seeded [out]                    (tests only, VXPLNK04)");
             std::process::exit(2);
         }

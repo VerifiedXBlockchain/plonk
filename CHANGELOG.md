@@ -4,6 +4,10 @@ The following are just a few examples, we will start keeping a change log for re
 
 # Unreleased
 
+- **Spend position bound to the Merkle path (Oct 2026).** In the shared spend gadget (Transfer, Unshield, Fee) the
+  position that feeds the nullifier must equal the path's direction bits read as a number. New circuit keys: params
+  magic **`VXPLNK06`** (`vfx_plonk_v4.params`); `plonk_load_params` refuses `VXPLNK05`. The verifier also refuses an
+  opening proof that carries a hiding term.
 - **Trusted setup (re-audit, 9 Oct 2026).** `trusted_setup_v1` seeds the KZG setup from a constant, so its tau is public
   and any statement can be proven against it: VXPLNK03 and VXPLNK04 are forgeable. `zcash_setup` imports the Zcash
   Sapling Powers of Tau (`phase1radix2m{k}`, k >= 16): Lagrange points → monomial powers by a group FFT, generator and

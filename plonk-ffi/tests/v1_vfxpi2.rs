@@ -1,6 +1,6 @@
 //! End-to-end tests of the v2 owner-bound circuits against the on-chain public-input encoding (VFXPI1 version 3)
-//! and the circuit-compatible native Poseidon. They need the `VXPLNK05` params with prover keys: set
-//! `VFX_PLONK_PARAMS` to the file, or place `vfx_plonk_v3.params` in the workspace root. Without it every test
+//! and the circuit-compatible native Poseidon. They need the `VXPLNK06` params with prover keys: set
+//! `VFX_PLONK_PARAMS` to the file, or place `vfx_plonk_v4.params` in the workspace root. Without it every test
 //! here returns early (and says so), so `cargo test` stays green on machines without the file.
 //!
 //! What they pin down for the Core node and wallet:
@@ -27,7 +27,7 @@ static mut LOADED: bool = false;
 fn params_loaded() -> bool {
     LOAD.call_once(|| {
         let path = std::env::var("VFX_PLONK_PARAMS").ok().or_else(|| {
-            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("vfx_plonk_v3.params");
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("vfx_plonk_v4.params");
             p.exists().then(|| p.to_string_lossy().into_owned())
         });
         let Some(path) = path else {
@@ -35,7 +35,7 @@ fn params_loaded() -> bool {
             return;
         };
         let bytes = std::fs::read(&path).expect("read params");
-        circuits_v1::try_load_v1_params(&bytes).expect("load VXPLNK05");
+        circuits_v1::try_load_v1_params(&bytes).expect("load VXPLNK06");
         unsafe { LOADED = circuits_v1::has_v1_prover_keys() };
         if !unsafe { LOADED } {
             eprintln!("v1_vfxpi2: params carry no prover keys; tests skipped");
@@ -265,6 +265,38 @@ fn a_note_cannot_be_spent_with_another_nullifier_key() {
     }
 }
 
+/// A spend's position is its Merkle path's direction bits read as a number. The position feeds the nullifier, so a
+/// position free of the path let one note be spent under as many nullifiers as positions. A spend that keeps the real
+/// path but claims another position cannot be proven or verified; the honest spend of the same note verifies.
+#[test]
+fn a_spend_position_is_its_merkle_path() {
+    if !params_loaded() { return; }
+    let nk = rand_fr(40);
+    let d = dummy();
+    let mut tree = FixedDepthTree::new();
+    tree.push(d.hash());
+    let note = Note { amount: 1_000_000_000, randomness: rand_fr(41), nk };
+    tree.push(note.hash());
+    let fee = 300u64;
+    let transparent = 900_000_000u64;
+    let change = Note { amount: note.amount - transparent - fee, randomness: rand_fr(42), nk };
+    let recipient = rand_fr(43);
+
+    let mut honest = unshield_circuit(&tree, [(1, &note, nk), (0, &d, Fr::zero())], transparent, &change, fee, recipient);
+    let (proof, _) = circuits_v1::ffi_prove_unshield(&mut honest).expect("honest spend proves");
+    assert_eq!(verify(Circuit::Unshield, &proof, &unshield_blob(tree.root(), fee, transparent, note.nullifier(1), d.nullifier(0), change.hash(), recipient)), Ok(true));
+
+    for claimed in [1u64 + (1u64 << 32), 3u64] {
+        let mut forged = unshield_circuit(&tree, [(1, &note, nk), (0, &d, Fr::zero())], transparent, &change, fee, recipient);
+        forged.inputs[0].position = fr(claimed);
+        let blob = unshield_blob(tree.root(), fee, transparent, note.nullifier(claimed), d.nullifier(0), change.hash(), recipient);
+        match circuits_v1::ffi_prove_unshield(&mut forged) {
+            Err(_) => {} // the prover refused an unsatisfied circuit
+            Ok((forged_proof, _)) => assert_ne!(verify(Circuit::Unshield, &forged_proof, &blob), Ok(true), "a spend at position {claimed} verified"),
+        }
+    }
+}
+
 /// Finding 1(b): with v1 the transparent recipient was not a public input, so a finished unshield could be copied with
 /// another `ToAddress`. With v2 the recipient tag is public input 7 and the proof fails for any other recipient.
 #[test]
@@ -377,11 +409,11 @@ fn fee_verifies_against_vfxpi3() {
 
 // ─── The FFI surface itself ───────────────────────────────────────────────────────────────────────────
 
-/// The C entry point the node uses (`plonk_load_params`) must take the VXPLNK05 file and report the v2 bits, and must
+/// The C entry point the node uses (`plonk_load_params`) must take the VXPLNK06 file and report the v2 bits, and must
 /// refuse VXPLNK03 (ownerless circuits) and VXPLNK04 (seeded setup) files. (Stage 3 regression: the dispatcher once matched the old magic only, so the new file "loaded"
 /// without loading any circuit.)
 #[test]
-fn plonk_load_params_takes_vxplnk05_and_reports_the_v2_capabilities() {
+fn plonk_load_params_takes_vxplnk06_and_reports_the_v2_capabilities() {
     let Some(path) = std::env::var("VFX_PLONK_PARAMS").ok().filter(|p| std::path::Path::new(p).exists()) else {
         eprintln!("plonk_load_params test: no VFX_PLONK_PARAMS; skipped");
         return;
@@ -393,9 +425,10 @@ fn plonk_load_params_takes_vxplnk05_and_reports_the_v2_capabilities() {
     assert_ne!(caps & plonk_ffi::PLONK_CAP_VFXPI2_VERIFY, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V2_CIRCUITS, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V1_PROVE, 0, "the params carry prover keys");
-    // A VXPLNK03 header (the v1 circuits) and a VXPLNK04 header (the seeded, forgeable setup) are refused.
+    // A VXPLNK03 header (the v1 circuits), a VXPLNK04 header (the seeded, forgeable setup) and a VXPLNK05 header (spend
+    // position not bound to the Merkle path) are refused.
     let mut old = std::fs::read(&path).unwrap();
-    for magic in [b"VXPLNK03", b"VXPLNK04"] {
+    for magic in [b"VXPLNK03", b"VXPLNK04", b"VXPLNK05"] {
         old[..8].copy_from_slice(magic);
         let tmp = std::env::temp_dir().join("vfx_plonk_rejected.params");
         std::fs::write(&tmp, &old).unwrap();
