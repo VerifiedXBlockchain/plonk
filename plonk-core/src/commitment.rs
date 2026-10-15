@@ -16,6 +16,12 @@ where
         commitments: &[Self::Commitment],
         scalars: &[F],
     ) -> Self::Commitment;
+
+    /// Whether an opening proof carries no hiding term. The prover never makes hiding openings, and a hiding term in
+    /// a proof is read from the proof itself, outside the transcript, so the verifier refuses any proof that has one.
+    fn opening_is_non_hiding(_proof: &Self::Proof) -> bool {
+        true
+    }
 }
 
 /// The Default KZG-style commitment scheme
@@ -45,6 +51,10 @@ where
             VariableBaseMSM::multi_scalar_mul(&points_repr, &scalars_repr)
                 .into(),
         )
+    }
+
+    fn opening_is_non_hiding(proof: &Self::Proof) -> bool {
+        proof.random_v.is_none()
     }
 }
 

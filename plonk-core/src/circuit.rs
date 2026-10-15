@@ -472,6 +472,43 @@ mod test {
         >()
     }
 
+    /// A KZG proof whose opening carries a hiding term is refused; the same proof without one verifies. The prover
+    /// never makes hiding openings, and the term is read from the proof outside the transcript.
+    #[test]
+    #[allow(non_snake_case)]
+    fn a_kzg_opening_with_a_hiding_term_is_refused_on_Bls12_381() -> Result<(), Error> {
+        use ark_ec::ModelParameters;
+        use ark_ff::Zero;
+        use ark_poly_commit::PolynomialCommitment;
+        type F = <Bls12_381 as PairingEngine>::Fr;
+        type P = ark_ed_on_bls12_381::EdwardsParameters;
+        type PC = crate::commitment::KZG10<Bls12_381>;
+        let pp = PC::setup(1 << 10, None, &mut OsRng).map_err(to_pc_error::<F, PC>)?;
+        let mut circuit = TestCircuit::<F, P>::default();
+        let (pk, (vk, _pi_pos)) = circuit.compile::<PC>(&pp)?;
+        let (x, y) = P::AFFINE_GENERATOR_COEFFS;
+        let generator: GroupAffine<P> = GroupAffine::new(x, y);
+        let mut circuit: TestCircuit<F, P> = TestCircuit {
+            a: F::from(20u64),
+            b: F::from(5u64),
+            c: F::from(25u64),
+            d: F::from(100u64),
+            e: <P as ModelParameters>::ScalarField::from(2u64),
+            f: AffineCurve::mul(&generator, <P as ModelParameters>::ScalarField::from(2u64).into_repr()).into_affine(),
+        };
+        let (proof, pi) = circuit.gen_proof::<PC>(&pp, pk, b"Test")?;
+        assert!(verify_proof::<F, P, PC>(&pp, vk.clone(), &proof, &pi, b"Test").is_ok());
+
+        let mut aw = proof.clone();
+        aw.aw_opening.random_v = Some(F::zero());
+        assert!(verify_proof::<F, P, PC>(&pp, vk.clone(), &aw, &pi, b"Test").is_err());
+
+        let mut saw = proof;
+        saw.saw_opening.random_v = Some(F::zero());
+        assert!(verify_proof::<F, P, PC>(&pp, vk, &saw, &pi, b"Test").is_err());
+        Ok(())
+    }
+
     #[test]
     #[allow(non_snake_case)]
     fn test_full_on_Bls12_381_ipa() -> Result<(), Error> {

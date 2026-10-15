@@ -136,6 +136,13 @@ where
                 adicity: <<F as FftField>::FftParams as ark_ff::FftParameters>::TWO_ADICITY,
             })?;
 
+        // No opening may carry a hiding term (see HomomorphicCommitment::opening_is_non_hiding).
+        if !PC::opening_is_non_hiding(&self.aw_opening)
+            || !PC::opening_is_non_hiding(&self.saw_opening)
+        {
+            return Err(Error::ProofVerificationError);
+        }
+
         // Append Public Inputs to the transcript
         transcript.append(b"pi", pub_inputs);
 
