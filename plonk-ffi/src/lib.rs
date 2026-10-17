@@ -29,6 +29,20 @@ pub const ERR_UTF8: i32 = -2;
 pub const ERR_CRYPTO: i32 = -4;
 pub const ERR_PARAM: i32 = -5;
 pub const ERR_NOT_IMPLEMENTED: i32 = -6;
+/// A panic inside the library (a malformed proof or input it did not anticipate). Unwinding across `extern "C"`
+/// aborts the host process, so every exported function catches it and returns this instead: the input is refused,
+/// the node keeps running.
+pub const ERR_PANIC: i32 = -7;
+
+/// Runs an exported function's body, turning a panic into [`ERR_PANIC`].
+macro_rules! ffi_guard {
+    ($($body:tt)*) => {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> i32 { $($body)* })) {
+            Ok(code) => code,
+            Err(_) => ERR_PANIC,
+        }
+    };
+}
 
 pub const G1_COMPRESSED_LEN: usize = 48;
 pub const FR_LEN: usize = 32;
@@ -56,7 +70,7 @@ pub const PLONK_CAP_V2_CIRCUITS: u32 = 64;
 #[no_mangle]
 pub extern "C" fn plonk_capabilities() -> u32 {
     let mut c = PLONK_CAP_PARSE_PUBLIC_INPUTS_V1;
-    let guard = VFX_PLONK_V0.lock().unwrap();
+    let guard = VFX_PLONK_V0.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(ref blob) = *guard {
         c |= PLONK_CAP_VERIFY_V1;
         if blob.prover_key.is_some() {
@@ -76,6 +90,7 @@ pub extern "C" fn plonk_capabilities() -> u32 {
 
 #[no_mangle]
 pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
+    ffi_guard!({
     if params_path.is_null() {
         return ERR_NULL;
     }
@@ -94,7 +109,7 @@ pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
                 || &bytes[..8] == verifiedx_circuits::circuit_keys::PARAMS_MAGIC_FREE_POSITION) {
                 match circuits_v1::try_load_v1_params(&bytes) {
                     Ok(()) => {
-                        *PARAMS.lock().unwrap() = bytes;
+                        *PARAMS.lock().unwrap_or_else(|e| e.into_inner()) = bytes;
                         return SUCCESS;
                     }
                     Err(_) => return ERR_CRYPTO,
@@ -106,21 +121,22 @@ pub extern "C" fn plonk_load_params(params_path: *const c_char) -> i32 {
             if is_vfx_params {
                 match VfxPlonkParamsBlob::deserialize(&bytes) {
                     Ok(blob) => {
-                        *VFX_PLONK_V0.lock().unwrap() = Some(blob);
-                        *PARAMS.lock().unwrap() = bytes;
+                        *VFX_PLONK_V0.lock().unwrap_or_else(|e| e.into_inner()) = Some(blob);
+                        *PARAMS.lock().unwrap_or_else(|e| e.into_inner()) = bytes;
                         SUCCESS
                     }
                     Err(_) => ERR_CRYPTO,
                 }
             } else {
-                *VFX_PLONK_V0.lock().unwrap() = None;
-                let mut g = PARAMS.lock().unwrap();
+                *VFX_PLONK_V0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                let mut g = PARAMS.lock().unwrap_or_else(|e| e.into_inner());
                 *g = bytes;
                 SUCCESS
             }
         }
         Err(_) => ERR_CRYPTO,
     }
+})
 }
 
 #[no_mangle]
@@ -129,6 +145,7 @@ pub extern "C" fn pedersen_commit(
     randomness: *const u8,
     commitment_out: *mut u8,
 ) -> i32 {
+    ffi_guard!({
     if randomness.is_null() || commitment_out.is_null() {
         return ERR_NULL;
     }
@@ -142,6 +159,7 @@ pub extern "C" fn pedersen_commit(
         }
         Err(_) => ERR_CRYPTO,
     }
+})
 }
 
 #[no_mangle]
@@ -150,6 +168,7 @@ pub extern "C" fn pedersen_verify(
     amount_scaled: u64,
     randomness: *const u8,
 ) -> i32 {
+    ffi_guard!({
     if commitment.is_null() || randomness.is_null() {
         return ERR_NULL;
     }
@@ -160,6 +179,7 @@ pub extern "C" fn pedersen_verify(
         Ok(false) => 0,
         Err(_) => -1,
     }
+})
 }
 
 #[no_mangle]
@@ -168,6 +188,7 @@ pub extern "C" fn pedersen_commitment_add(
     commitment_b: *const u8,
     commitment_out: *mut u8,
 ) -> i32 {
+    ffi_guard!({
     if commitment_a.is_null() || commitment_b.is_null() || commitment_out.is_null() {
         return ERR_NULL;
     }
@@ -182,6 +203,7 @@ pub extern "C" fn pedersen_commitment_add(
         }
         Err(_) => ERR_CRYPTO,
     }
+})
 }
 
 #[no_mangle]
@@ -190,6 +212,7 @@ pub extern "C" fn poseidon_hash(
     inputs_len: usize,
     hash_out: *mut u8,
 ) -> i32 {
+    ffi_guard!({
     if inputs.is_null() || hash_out.is_null() {
         return ERR_NULL;
     }
@@ -203,6 +226,7 @@ pub extern "C" fn poseidon_hash(
         }
         Err(_) => ERR_CRYPTO,
     }
+})
 }
 
 #[no_mangle]
@@ -211,6 +235,7 @@ pub extern "C" fn merkle_tree_add(
     commitment: *const u8,
     position_out: *mut u64,
 ) -> i32 {
+    ffi_guard!({
     if tree_id.is_null() || commitment.is_null() || position_out.is_null() {
         return ERR_NULL;
     }
@@ -220,12 +245,13 @@ pub extern "C" fn merkle_tree_add(
         Err(_) => return ERR_UTF8,
     };
     let c = unsafe { std::slice::from_raw_parts(commitment, G1_COMPRESSED_LEN) };
-    let mut g = MERKLE.lock().unwrap();
+    let mut g = MERKLE.lock().unwrap_or_else(|e| e.into_inner());
     let pos = g.add_leaf(&id, c);
     unsafe {
         *position_out = pos;
     }
     SUCCESS
+})
 }
 
 #[no_mangle]
@@ -236,6 +262,7 @@ pub extern "C" fn merkle_tree_prove(
     proof_out_len: *mut usize,
     root_out: *mut u8,
 ) -> i32 {
+    ffi_guard!({
     if tree_id.is_null() || proof_out.is_null() || proof_out_len.is_null() || root_out.is_null() {
         return ERR_NULL;
     }
@@ -244,7 +271,7 @@ pub extern "C" fn merkle_tree_prove(
         Ok(s) => s,
         Err(_) => return ERR_UTF8,
     };
-    let g = MERKLE.lock().unwrap();
+    let g = MERKLE.lock().unwrap_or_else(|e| e.into_inner());
     let (proof, root) = match g.prove(id, position) {
         Some(p) => p,
         None => return ERR_PARAM,
@@ -262,6 +289,7 @@ pub extern "C" fn merkle_tree_prove(
         std::ptr::copy_nonoverlapping(root.as_ptr(), root_out, FR_LEN);
     }
     SUCCESS
+})
 }
 
 #[no_mangle]
@@ -271,6 +299,7 @@ pub extern "C" fn nullifier_derive(
     tree_position: u64,
     nullifier_out: *mut u8,
 ) -> i32 {
+    ffi_guard!({
     if viewing_key.is_null() || commitment.is_null() || nullifier_out.is_null() {
         return ERR_NULL;
     }
@@ -285,6 +314,7 @@ pub extern "C" fn nullifier_derive(
         }
         Err(_) => ERR_CRYPTO,
     }
+})
 }
 
 /// Derive a nullifier using note_hash (v1 circuit-compatible).
@@ -304,6 +334,7 @@ pub unsafe extern "C" fn nullifier_derive_v1(
     tree_position: u64,
     nullifier_out: *mut u8,
 ) -> i32 {
+    ffi_guard!({
     if viewing_key.is_null() || note_hash.is_null() || nullifier_out.is_null() {
         return ERR_NULL;
     }
@@ -316,6 +347,7 @@ pub unsafe extern "C" fn nullifier_derive_v1(
         }
         Err(_) => ERR_CRYPTO,
     }
+})
 }
 
 // ─── Circuit-compatible Poseidon (v1) ─────────────────────────────────────────────────────────────────
@@ -343,68 +375,81 @@ fn write_fr(fr: &ark_bls12_381::Fr, out: *mut u8) -> i32 {
 /// `out = Poseidon(a, b)` exactly as the v1 circuits compute it (the Merkle parent hash).
 #[no_mangle]
 pub extern "C" fn poseidon_hash_2(a: *const u8, b: *const u8, hash_out: *mut u8) -> i32 {
+    ffi_guard!({
     let (a, b) = match (read_fr(a), read_fr(b)) {
         (Ok(a), Ok(b)) => (a, b),
         (Err(e), _) | (_, Err(e)) => return e,
     };
     write_fr(&poseidon_v1::hash_2(a, b), hash_out)
+})
 }
 
 /// `out = Poseidon(a, b, c)` exactly as the v1 circuits compute it (chained from zero).
 #[no_mangle]
 pub extern "C" fn poseidon_hash_3(a: *const u8, b: *const u8, c: *const u8, hash_out: *mut u8) -> i32 {
+    ffi_guard!({
     let (a, b, c) = match (read_fr(a), read_fr(b), read_fr(c)) {
         (Ok(a), Ok(b), Ok(c)) => (a, b, c),
         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => return e,
     };
     write_fr(&poseidon_v1::hash_3(a, b, c), hash_out)
+})
 }
 
 /// `note_hash = Poseidon(amount_scaled, randomness)`: the Merkle leaf the v1 circuits bind.
 #[no_mangle]
 pub extern "C" fn poseidon_note_hash(amount_scaled: u64, randomness: *const u8, hash_out: *mut u8) -> i32 {
+    ffi_guard!({
     let r = match read_fr(randomness) {
         Ok(r) => r,
         Err(e) => return e,
     };
     write_fr(&poseidon_v1::note_hash(amount_scaled, r), hash_out)
+})
 }
 
 /// `owner_pk = Poseidon(OWNER_PK_DOMAIN, nullifier_key)`: the owner key the v2 notes carry (`poseidon_v1::owner_pk`).
 #[no_mangle]
 pub extern "C" fn poseidon_owner_pk(nullifier_key: *const u8, hash_out: *mut u8) -> i32 {
+    ffi_guard!({
     let nk = match read_fr(nullifier_key) {
         Ok(k) => k,
         Err(e) => return e,
     };
     write_fr(&poseidon_v1::owner_pk(nk), hash_out)
+})
 }
 
 /// `note_hash = Poseidon(amount_scaled, randomness, owner_pk)`: the v2 (owner-bound) Merkle leaf the circuits bind.
 #[no_mangle]
 pub extern "C" fn poseidon_note_hash_v2(amount_scaled: u64, randomness: *const u8, owner_pk: *const u8, hash_out: *mut u8) -> i32 {
+    ffi_guard!({
     let (r, o) = match (read_fr(randomness), read_fr(owner_pk)) {
         (Ok(r), Ok(o)) => (r, o),
         (Err(e), _) | (_, Err(e)) => return e,
     };
     write_fr(&poseidon_v1::note_hash_v2(amount_scaled, r, o), hash_out)
+})
 }
 
 /// The digest of an empty subtree of height `level` (0 = an empty leaf, i.e. the zero field element), used to
 /// pad the fixed-depth-32 tree the v1 circuits prove against.
 #[no_mangle]
 pub extern "C" fn poseidon_merkle_zero(level: u32, hash_out: *mut u8) -> i32 {
+    ffi_guard!({
     if level as usize > poseidon_v1::TREE_DEPTH {
         return ERR_PARAM;
     }
     let zeros = poseidon_v1::zero_hashes();
     write_fr(&zeros[level as usize], hash_out)
+})
 }
 
 /// Recomputes the root from `leaf`, its `position` and a `TREE_DEPTH` x 32-byte sibling path (bottom-up),
 /// exactly as the circuits' `merkle_path_verify` does.
 #[no_mangle]
 pub extern "C" fn merkle_root_from_path_v1(leaf: *const u8, position: u64, path: *const u8, path_len: usize, root_out: *mut u8) -> i32 {
+    ffi_guard!({
     if path.is_null() {
         return ERR_NULL;
     }
@@ -427,6 +472,7 @@ pub extern "C" fn merkle_root_from_path_v1(leaf: *const u8, position: u64, path:
         Ok(root) => write_fr(&root, root_out),
         Err(_) => ERR_PARAM,
     }
+})
 }
 
 #[no_mangle]
@@ -437,6 +483,7 @@ pub extern "C" fn plonk_verify(
     public_inputs: *const u8,
     public_inputs_len: usize,
 ) -> i32 {
+    ffi_guard!({
     if proof.is_null() || public_inputs.is_null() {
         return ERR_NULL;
     }
@@ -486,13 +533,14 @@ pub extern "C" fn plonk_verify(
     if circuit_type != parsed as u8 {
         return 0;
     }
-    if let Some(ref blob) = *VFX_PLONK_V0.lock().unwrap() {
+    if let Some(ref blob) = *VFX_PLONK_V0.lock().unwrap_or_else(|e| e.into_inner()) {
         return match verifiedx_circuits::verify_vfxpi_v0(blob, proof_slice, pi_slice) {
             Ok(()) => 1,
             Err(_) => 0,
         };
     }
     ERR_NOT_IMPLEMENTED
+})
 }
 
 /// Generate a v0 PLONK proof for `public_inputs` (full VFXPI1 blob). Requires **`VXPLNK02`** params with prover key.
@@ -506,6 +554,7 @@ pub extern "C" fn plonk_prove_v0(
     proof_out: *mut u8,
     proof_out_len: *mut usize,
 ) -> i32 {
+    ffi_guard!({
     if public_inputs.is_null() || proof_out_len.is_null() {
         return ERR_NULL;
     }
@@ -517,7 +566,7 @@ pub extern "C" fn plonk_prove_v0(
     if circuit_type != parsed as u8 {
         return ERR_PARAM;
     }
-    let guard = VFX_PLONK_V0.lock().unwrap();
+    let guard = VFX_PLONK_V0.lock().unwrap_or_else(|e| e.into_inner());
     let blob = match guard.as_ref() {
         Some(b) if b.prover_key.is_some() => b,
         Some(_) => return ERR_NOT_IMPLEMENTED,
@@ -545,6 +594,7 @@ pub extern "C" fn plonk_prove_v0(
         *proof_out_len = proof_vec.len();
     }
     SUCCESS
+})
 }
 
 /// Generate a Shield circuit proof (v1). Requires `VXPLNK03` params with prover keys.
@@ -564,6 +614,7 @@ pub unsafe extern "C" fn plonk_prove_shield(
     pi_out: *mut u8,
     pi_out_len: *mut usize,
 ) -> i32 {
+    ffi_guard!({
     if randomness.is_null() || owner_pk.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
         return ERR_NULL;
     }
@@ -585,6 +636,7 @@ pub unsafe extern "C" fn plonk_prove_shield(
     };
 
     write_proof_and_pi(proof_out, proof_out_len, pi_out, pi_out_len, &proof_bytes, &pi_bytes)
+})
 }
 
 /// Generate a Transfer circuit proof (v1, 2-in/2-out).
@@ -615,6 +667,7 @@ pub unsafe extern "C" fn plonk_prove_transfer(
     pi_out: *mut u8,
     pi_out_len: *mut usize,
 ) -> i32 {
+    ffi_guard!({
     if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
         return ERR_NULL;
     }
@@ -674,6 +727,7 @@ pub unsafe extern "C" fn plonk_prove_transfer(
     };
 
     write_proof_and_pi(proof_out, proof_out_len, pi_out, pi_out_len, &proof_bytes, &pi_bytes)
+})
 }
 
 /// Generate an Unshield circuit proof (v1).
@@ -699,6 +753,7 @@ pub unsafe extern "C" fn plonk_prove_unshield(
     pi_out: *mut u8,
     pi_out_len: *mut usize,
 ) -> i32 {
+    ffi_guard!({
     if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
         return ERR_NULL;
     }
@@ -768,6 +823,7 @@ pub unsafe extern "C" fn plonk_prove_unshield(
     };
 
     write_proof_and_pi(proof_out, proof_out_len, pi_out, pi_out_len, &proof_bytes, &pi_bytes)
+})
 }
 
 /// Generate a Fee circuit proof (v1, 1-in/1-out).
@@ -791,6 +847,7 @@ pub unsafe extern "C" fn plonk_prove_fee(
     pi_out: *mut u8,
     pi_out_len: *mut usize,
 ) -> i32 {
+    ffi_guard!({
     if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
         return ERR_NULL;
     }
@@ -853,6 +910,7 @@ pub unsafe extern "C" fn plonk_prove_fee(
     };
 
     write_proof_and_pi(proof_out, proof_out_len, pi_out, pi_out_len, &proof_bytes, &pi_bytes)
+})
 }
 
 /// Helper: write proof + pi bytes to output buffers with length checking.
