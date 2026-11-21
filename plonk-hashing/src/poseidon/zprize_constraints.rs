@@ -152,11 +152,13 @@ impl<
 
         let mut res = *state;
         if *constants_offset == 0 {
-            // first round
+            // first round. The capacity slot holds the composer's zero variable (see `alloc`), so the domain tag is
+            // added here as a constant of this gate: the prover cannot choose it.
+            let capacity_key = *pre_round_keys[0] + constants.domain_tag;
             res[0] = <Self as PoseidonRefSpec<_, WIDTH>>::addi(
                 c,
                 &res[0],
-                pre_round_keys[0],
+                &capacity_key,
             );
             res[1] = <Self as PoseidonRefSpec<_, WIDTH>>::addi(
                 c,
@@ -261,11 +263,14 @@ impl<
         *constants_offset += WIDTH;
     }
 
+    /// Only ever called for the capacity slot's domain tag. Returns the composer's zero variable (constrained to zero
+    /// when the composer is made) instead of a new witness: `full_round` adds the tag as a constant in the first
+    /// round's gate, so the value is fixed by the circuit, not chosen by the prover. Same number of gates as before.
     fn alloc(
         c: &mut StandardComposer<F, P>,
-        v: Self::ParameterField,
+        _v: Self::ParameterField,
     ) -> Self::Field {
-        c.add_input(v)
+        c.zero_var()
     }
 
     fn zeros<const W: usize>(
@@ -430,5 +435,37 @@ mod tests {
 
         println!("{} {}", param.partial_rounds, param.full_rounds);
         println!("#constraints: {}", composer.total_size());
+    }
+
+    /// The capacity slot is the composer's zero variable, after `new` and after `reset`: no witness the prover could
+    /// set. The domain tag enters as a gate constant, so the hash still equals the native one, with the same number
+    /// of gates.
+    #[test]
+    fn the_capacity_is_not_a_free_witness() {
+        let param = PoseidonConstants::generate::<3>();
+        let mut composer = Composer::new();
+        let mut hasher = PoseidonZZRef::<_, PlonkSpecZZ<Fr>, 3>::new(&mut composer, param.clone());
+        assert_eq!(hasher.elements[0], composer.zero_var());
+        let a = composer.add_input(Fr::from(5u64));
+        let b = composer.add_input(Fr::from(9u64));
+        hasher.input(a).unwrap();
+        hasher.input(b).unwrap();
+        let before = composer.total_size();
+        let out = hasher.output_hash(&mut composer);
+        let gates = composer.total_size() - before;
+
+        let mut native = PoseidonRef::<(), NativeSpecRef<Fr>, 3>::new(&mut (), param.clone());
+        native.input(Fr::from(5u64)).unwrap();
+        native.input(Fr::from(9u64)).unwrap();
+        assert_eq!(composer.value_of_var(out), native.output_hash(&mut ()));
+
+        hasher.reset(&mut composer);
+        assert_eq!(hasher.elements[0], composer.zero_var());
+        hasher.input(a).unwrap();
+        hasher.input(b).unwrap();
+        let before = composer.total_size();
+        let again = hasher.output_hash(&mut composer);
+        assert_eq!(composer.total_size() - before, gates);
+        assert_eq!(composer.value_of_var(again), composer.value_of_var(out));
     }
 }

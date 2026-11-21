@@ -434,6 +434,7 @@ fn plonk_load_params_takes_vxplnk06_and_reports_the_v2_capabilities() {
     assert_ne!(caps & plonk_ffi::PLONK_CAP_VFXPI2_VERIFY, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V2_CIRCUITS, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_VERIFY2, 0);
+    assert_ne!(caps & plonk_ffi::PLONK_CAP_BOUND_HASH_CAPACITY, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V1_PROVE, 0, "the params carry prover keys");
     // A VXPLNK03 header (the v1 circuits), a VXPLNK04 header (the seeded, forgeable setup) and a VXPLNK05 header (spend
     // position not bound to the Merkle path) are refused.

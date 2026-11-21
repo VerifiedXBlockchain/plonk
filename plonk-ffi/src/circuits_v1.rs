@@ -29,8 +29,16 @@ type UParams = <PC as ark_poly_commit::PolynomialCommitment<Fr, ark_poly::univar
 pub(crate) static V1_STATE: Lazy<Mutex<Option<V1Loaded>>> =
     Lazy::new(|| Mutex::new(None));
 
+/// The verifier keys in the params file are the circuits as they were when it was made; they judge proofs under the
+/// original rules (`ProofRules::Legacy`), as proofs mined before were judged. The `cur_*` keys, and every prover key,
+/// are compiled at load from the file's universal params for the circuits as this library builds them now; they judge
+/// proofs under the current rules.
 pub(crate) struct V1Loaded {
     pub pp: UParams,
+    pub cur_shield_vk: VerifierKey<Fr, PC>,
+    pub cur_transfer_vk: VerifierKey<Fr, PC>,
+    pub cur_unshield_vk: VerifierKey<Fr, PC>,
+    pub cur_fee_vk: VerifierKey<Fr, PC>,
     pub shield_vk: VerifierKey<Fr, PC>,
     pub shield_pk: Option<ProverKey<Fr>>,
     pub transfer_vk: VerifierKey<Fr, PC>,
@@ -66,46 +74,41 @@ pub fn try_load_v1_params(bytes: &[u8]) -> Result<(), &'static str> {
     let pp: UParams = CanonicalDeserialize::deserialize(blob.universal_params.as_slice())
         .map_err(|_| "failed to deserialize universal params")?;
 
+    // The file's verifier keys: the circuits as they were, for the original rules. Its prover keys are of those
+    // circuits too and are not loaded.
     let shield_vk = CanonicalDeserialize::deserialize(blob.shield_vk.as_slice())
         .map_err(|_| "failed to deserialize shield vk")?;
-    let shield_pk = blob.shield_pk.as_ref().map(|b| {
-        CanonicalDeserialize::deserialize(b.as_slice()).expect("shield pk deserialize")
-    });
-
     let transfer_vk = CanonicalDeserialize::deserialize(blob.transfer_vk.as_slice())
         .map_err(|_| "failed to deserialize transfer vk")?;
-    let transfer_pk = blob.transfer_pk.as_ref().map(|b| {
-        CanonicalDeserialize::deserialize(b.as_slice()).expect("transfer pk deserialize")
-    });
-
     let unshield_vk = CanonicalDeserialize::deserialize(blob.unshield_vk.as_slice())
         .map_err(|_| "failed to deserialize unshield vk")?;
-    let unshield_pk = blob.unshield_pk.as_ref().map(|b| {
-        CanonicalDeserialize::deserialize(b.as_slice()).expect("unshield pk deserialize")
-    });
-
     let fee_vk = CanonicalDeserialize::deserialize(blob.fee_vk.as_slice())
         .map_err(|_| "failed to deserialize fee vk")?;
-    let fee_pk = blob.fee_pk.as_ref().map(|b| {
-        CanonicalDeserialize::deserialize(b.as_slice()).expect("fee pk deserialize")
-    });
 
-    // Positions are a property of the circuits, not of the params: a few milliseconds each.
-    let shield_pi_pos = circuit_keys::pi_positions_shield();
-    let transfer_pi_pos = circuit_keys::pi_positions_transfer();
-    let unshield_pi_pos = circuit_keys::pi_positions_unshield();
-    let fee_pi_pos = circuit_keys::pi_positions_fee();
+    // The circuits as this library builds them, compiled from the same universal params.
+    let current = circuit_keys::compile_all_circuits(&pp, true).map_err(|_| "failed to compile the circuit keys")?;
+
+    // Positions are a property of the circuits, not of the params. The circuits as built now have the same gates in
+    // the same order as those the file's keys were made for, so one set of positions serves both.
+    let shield_pi_pos = current.shield_pi_pos;
+    let transfer_pi_pos = current.transfer_pi_pos;
+    let unshield_pi_pos = current.unshield_pi_pos;
+    let fee_pi_pos = current.fee_pi_pos;
 
     *v1_lock() = Some(V1Loaded {
         pp,
+        cur_shield_vk: current.shield_vk,
+        cur_transfer_vk: current.transfer_vk,
+        cur_unshield_vk: current.unshield_vk,
+        cur_fee_vk: current.fee_vk,
         shield_vk,
-        shield_pk,
+        shield_pk: current.shield_pk,
         transfer_vk,
-        transfer_pk,
+        transfer_pk: current.transfer_pk,
         unshield_vk,
-        unshield_pk,
+        unshield_pk: current.unshield_pk,
         fee_vk,
-        fee_pk,
+        fee_pk: current.fee_pk,
         shield_pi_pos,
         transfer_pi_pos,
         unshield_pi_pos,
@@ -113,6 +116,20 @@ pub fn try_load_v1_params(bytes: &[u8]) -> Result<(), &'static str> {
     });
 
     Ok(())
+}
+
+impl V1Loaded {
+    /// The verifier key that judges a proof of `circuit` under `rules`.
+    fn vk(&self, circuit: Circuit, rules: ProofRules) -> VerifierKey<Fr, PC> {
+        let current = rules == ProofRules::Current;
+        match circuit {
+            Circuit::Shield => if current { &self.cur_shield_vk } else { &self.shield_vk },
+            Circuit::Transfer => if current { &self.cur_transfer_vk } else { &self.transfer_vk },
+            Circuit::Unshield => if current { &self.cur_unshield_vk } else { &self.unshield_vk },
+            Circuit::Fee => if current { &self.cur_fee_vk } else { &self.fee_vk },
+        }
+        .clone()
+    }
 }
 
 /// The v1 state, recovering the lock if a panic ever poisoned it (one bad call must not disable the library).
@@ -163,7 +180,7 @@ pub fn ffi_prove_shield(amount_scaled: u64, randomness_fr: Fr, owner_pk: Fr) -> 
 pub fn ffi_verify_shield(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::verify_shield(&state.pp, state.shield_vk.clone(), proof_bytes, pi_bytes, rules)
+    circuit_keys::verify_shield(&state.pp, state.vk(Circuit::Shield, rules), proof_bytes, pi_bytes, rules)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -182,7 +199,7 @@ pub fn ffi_prove_transfer(circuit: &mut TransferCircuit<Fr>) -> Result<(Vec<u8>,
 pub fn ffi_verify_transfer(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::verify_transfer(&state.pp, state.transfer_vk.clone(), proof_bytes, pi_bytes, rules)
+    circuit_keys::verify_transfer(&state.pp, state.vk(Circuit::Transfer, rules), proof_bytes, pi_bytes, rules)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -201,7 +218,7 @@ pub fn ffi_prove_unshield(circuit: &mut UnshieldCircuit<Fr>) -> Result<(Vec<u8>,
 pub fn ffi_verify_unshield(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::verify_unshield(&state.pp, state.unshield_vk.clone(), proof_bytes, pi_bytes, rules)
+    circuit_keys::verify_unshield(&state.pp, state.vk(Circuit::Unshield, rules), proof_bytes, pi_bytes, rules)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -220,7 +237,7 @@ pub fn ffi_prove_fee(circuit: &mut FeeCircuit<Fr>) -> Result<(Vec<u8>, Vec<u8>),
 pub fn ffi_verify_fee(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::verify_fee(&state.pp, state.fee_vk.clone(), proof_bytes, pi_bytes, rules)
+    circuit_keys::verify_fee(&state.pp, state.vk(Circuit::Fee, rules), proof_bytes, pi_bytes, rules)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -244,12 +261,7 @@ pub fn ffi_verify_vfxpi3(circuit_type: u8, proof_bytes: &[u8], pi_blob: &[u8], r
             Circuit::Fee => (&state.fee_pi_pos, circuit_keys::verify_fee_pi),
         };
     let pi = circuit_keys::public_inputs_from_values(positions, &parsed.values).map_err(|_| crate::ERR_PARAM)?;
-    let vk = match parsed.circuit {
-        Circuit::Shield => state.shield_vk.clone(),
-        Circuit::Transfer => state.transfer_vk.clone(),
-        Circuit::Unshield => state.unshield_vk.clone(),
-        Circuit::Fee => state.fee_vk.clone(),
-    };
+    let vk = state.vk(parsed.circuit, rules);
     verify(&state.pp, vk, proof_bytes, &pi, rules).map_err(|_| crate::ERR_CRYPTO)
 }
 

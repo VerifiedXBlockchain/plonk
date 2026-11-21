@@ -70,6 +70,10 @@ pub const PLONK_CAP_V2_CIRCUITS: u32 = 64;
 /// `plonk_verify` keeps the original rules (for proofs judged under them before); it refuses a proof made by this
 /// library. Matches C# `PlonkNative.CapVerify2`.
 pub const PLONK_CAP_VERIFY2: u32 = 128;
+/// Bit 8: the circuits' hashes fix their capacity element to the domain tag (it is a gate constant, not a witness).
+/// `plonk_verify2` and `plonk_prove_*` use the circuits built that way; `plonk_verify` keeps the params file's keys.
+/// Matches C# `PlonkNative.CapBoundHashCapacity`.
+pub const PLONK_CAP_BOUND_HASH_CAPACITY: u32 = 256;
 
 #[no_mangle]
 pub extern "C" fn plonk_capabilities() -> u32 {
@@ -84,7 +88,7 @@ pub extern "C" fn plonk_capabilities() -> u32 {
     drop(guard);
     // v1 real circuit capabilities
     if circuits_v1::is_v1_loaded() {
-        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY | PLONK_CAP_V2_CIRCUITS | PLONK_CAP_VERIFY2;
+        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY | PLONK_CAP_V2_CIRCUITS | PLONK_CAP_VERIFY2 | PLONK_CAP_BOUND_HASH_CAPACITY;
         if circuits_v1::has_v1_prover_keys() {
             c |= PLONK_CAP_V1_PROVE;
         }
