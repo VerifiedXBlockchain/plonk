@@ -599,13 +599,38 @@ where
         let (aw_commits, aw_rands) = PC::commit(commit_key, &aw_polys, None)
             .map_err(to_pc_error::<F, PC>)?;
 
+        // Every other evaluation in the proof is opened at `z` too (in the verifier's order).
+        let aw_selector_polys = [
+            label_polynomial!(prover_key.arithmetic.q_arith.0),
+            label_polynomial!(prover_key.arithmetic.q_c.0),
+            label_polynomial!(prover_key.arithmetic.q_l.0),
+            label_polynomial!(prover_key.arithmetic.q_r.0),
+            label_polynomial!(prover_key.arithmetic.q_hl.0),
+            label_polynomial!(prover_key.arithmetic.q_hr.0),
+            label_polynomial!(prover_key.arithmetic.q_h4.0),
+            label_polynomial!(prover_key.lookup.q_lookup.0),
+            label_polynomial!(h_1_poly),
+        ];
+        let (aw_selector_commits, aw_selector_rands) =
+            PC::commit(commit_key, &aw_selector_polys, None)
+                .map_err(to_pc_error::<F, PC>)?;
+
         let aw_opening = PC::open(
             commit_key,
-            aw_polys.iter().chain(w_polys.iter()),
-            aw_commits.iter().chain(w_commits.iter()),
+            aw_polys
+                .iter()
+                .chain(w_polys.iter())
+                .chain(aw_selector_polys.iter()),
+            aw_commits
+                .iter()
+                .chain(w_commits.iter())
+                .chain(aw_selector_commits.iter()),
             &z_challenge,
             aw_challenge,
-            aw_rands.iter().chain(w_rands.iter()),
+            aw_rands
+                .iter()
+                .chain(w_rands.iter())
+                .chain(aw_selector_rands.iter()),
             None,
         )
         .map_err(to_pc_error::<F, PC>)?;

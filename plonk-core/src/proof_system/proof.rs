@@ -42,9 +42,24 @@ pub enum ProofRules {
     /// The prover no longer makes proofs that pass them.
     Legacy,
     /// The rules the prover follows: every commitment and evaluation in the proof is absorbed into the transcript
-    /// before the challenges that follow it.
+    /// before the challenges that follow it, and every evaluation is opened against a commitment.
     Current,
 }
+
+/// The labels of [`CustomEvaluations`](super::linearisation_poly::CustomEvaluations) a proof carries under
+/// [`ProofRules::Current`], in the prover's order.
+pub const CUSTOM_EVAL_LABELS: [&str; 10] = [
+    "q_arith_eval",
+    "q_c_eval",
+    "q_l_eval",
+    "q_r_eval",
+    "q_hl_eval",
+    "q_hr_eval",
+    "q_h4_eval",
+    "a_next_eval",
+    "b_next_eval",
+    "d_next_eval",
+];
 
 /// A [`Proof`] is a composition of `Commitment`s to the Witness, Permutation,
 /// Quotient, Shifted and Opening polynomials as well as the
@@ -152,6 +167,18 @@ where
         // No opening may carry a hiding term (see HomomorphicCommitment::opening_is_non_hiding).
         if !PC::opening_is_non_hiding(&self.aw_opening)
             || !PC::opening_is_non_hiding(&self.saw_opening)
+        {
+            return Err(Error::ProofVerificationError);
+        }
+
+        // The custom evaluations are exactly the ones the prover makes, in its order.
+        let custom_vals = &self.evaluations.custom_evals.vals;
+        if current
+            && (custom_vals.len() != CUSTOM_EVAL_LABELS.len()
+                || custom_vals
+                    .iter()
+                    .zip(CUSTOM_EVAL_LABELS.iter())
+                    .any(|((label, _), expected)| label != expected))
         {
             return Err(Error::ProofVerificationError);
         }
@@ -333,14 +360,20 @@ where
             );
         }
 
-        self.evaluations
-            .custom_evals
-            .vals
-            .iter()
-            .for_each(|(label, eval)| {
-                let static_label = Box::leak(label.to_owned().into_boxed_str());
-                transcript.append(static_label.as_bytes(), eval);
-            });
+        if current {
+            for ((_, eval), label) in custom_vals.iter().zip(CUSTOM_EVAL_LABELS.iter()) {
+                transcript.append(label.as_bytes(), eval);
+            }
+        } else {
+            self.evaluations
+                .custom_evals
+                .vals
+                .iter()
+                .for_each(|(label, eval)| {
+                    let static_label = Box::leak(label.to_owned().into_boxed_str());
+                    transcript.append(static_label.as_bytes(), eval);
+                });
+        }
 
         // Compute linearisation commitment
         let lin_comm = self.compute_linearisation_commitment::<P>(
@@ -392,7 +425,7 @@ where
         // challenge `z`
         let aw_challenge: F = transcript.challenge_scalar(b"aggregate_witness");
 
-        let aw_commits = [
+        let mut aw_commits = vec![
             label_commitment!(lin_comm),
             label_commitment!(plonk_verifier_key.permutation.left_sigma),
             label_commitment!(plonk_verifier_key.permutation.right_sigma),
@@ -406,7 +439,7 @@ where
             label_commitment!(self.d_comm),
         ];
 
-        let aw_evals = [
+        let mut aw_evals = vec![
             -r0,
             self.evaluations.perm_evals.left_sigma_eval,
             self.evaluations.perm_evals.right_sigma_eval,
@@ -419,6 +452,33 @@ where
             self.evaluations.wire_evals.c_eval,
             self.evaluations.wire_evals.d_eval,
         ];
+        if current {
+            // Every other evaluation the proof carries, opened at `z` against its commitment.
+            let arith = &plonk_verifier_key.arithmetic;
+            let ce = &self.evaluations.custom_evals;
+            aw_commits.extend_from_slice(&[
+                label_commitment!(arith.q_arith),
+                label_commitment!(arith.q_c),
+                label_commitment!(arith.q_l),
+                label_commitment!(arith.q_r),
+                label_commitment!(arith.q_hl),
+                label_commitment!(arith.q_hr),
+                label_commitment!(arith.q_h4),
+                label_commitment!(plonk_verifier_key.lookup.q_lookup),
+                label_commitment!(self.h_1_comm),
+            ]);
+            aw_evals.extend_from_slice(&[
+                ce.get("q_arith_eval"),
+                ce.get("q_c_eval"),
+                ce.get("q_l_eval"),
+                ce.get("q_r_eval"),
+                ce.get("q_hl_eval"),
+                ce.get("q_hr_eval"),
+                ce.get("q_h4_eval"),
+                self.evaluations.lookup_evals.q_lookup_eval,
+                self.evaluations.lookup_evals.h1_eval,
+            ]);
+        }
 
         let saw_challenge: F =
             transcript.challenge_scalar(b"aggregate_witness");
@@ -763,16 +823,63 @@ mod test {
         assert_eq!(proof, obtained_proof);
     }
 
+    /// A proof the prover makes passes the current rules and not the original ones; under the current rules a proof
+    /// whose custom evaluations are not exactly the prover's (renamed, missing, repeated) is refused, never a panic.
+    fn test_proof_rules<F, P, PC>()
+    where
+        F: PrimeField,
+        P: TEModelParameters<BaseField = F>,
+        PC: HomomorphicCommitment<F>,
+    {
+        use crate::proof_system::{Prover, Verifier};
+        use rand_core::OsRng;
+        let n = 200;
+        let pp = PC::setup(2 * n, None, &mut OsRng).unwrap();
+        let gadget = |c: &mut crate::constraint_system::StandardComposer<F, P>| {
+            let a = c.add_input(F::from(3u64));
+            c.constrain_to_constant(a, F::from(3u64), None);
+        };
+        let mut prover = Prover::<F, P, PC>::new(b"rules");
+        gadget(prover.mut_cs());
+        let (ck, _) = PC::trim(&pp, prover.circuit_bound(), 0, None).unwrap();
+        prover.preprocess(&ck).unwrap();
+        let pi = prover.cs.get_pi().clone();
+        let proof = prover.prove(&ck).unwrap();
+
+        let mut verifier = Verifier::<F, P, PC>::new(b"rules");
+        gadget(verifier.mut_cs());
+        let (ck, vk) = PC::trim(&pp, verifier.circuit_bound(), 0, None).unwrap();
+        verifier.preprocess(&ck).unwrap();
+
+        assert!(verifier.verify_with_rules(&proof, &vk, &pi, ProofRules::Current).is_ok());
+        assert!(verifier.verify(&proof, &vk, &pi).is_ok());
+        assert!(verifier.verify_with_rules(&proof, &vk, &pi, ProofRules::Legacy).is_err());
+
+        let mut renamed = proof.clone();
+        renamed.evaluations.custom_evals.vals[0].0 = "other_eval".to_string();
+        let mut missing = proof.clone();
+        missing.evaluations.custom_evals.vals.remove(0);
+        let mut repeated = proof.clone();
+        let first = repeated.evaluations.custom_evals.vals[0].clone();
+        repeated.evaluations.custom_evals.vals.insert(0, first);
+        for bad in [renamed, missing, repeated] {
+            assert!(matches!(
+                verifier.verify_with_rules(&bad, &vk, &pi, ProofRules::Current),
+                Err(Error::ProofVerificationError)
+            ));
+        }
+    }
+
     // Bls12-381 tests
     batch_test_kzg!(
-        [test_serde_proof],
+        [test_serde_proof, test_proof_rules],
         [] => (
             Bls12_381, ark_ed_on_bls12_381::EdwardsParameters
         )
     );
     // Bls12-377 tests
     batch_test_kzg!(
-        [test_serde_proof],
+        [test_serde_proof, test_proof_rules],
         [] => (
             Bls12_377, ark_ed_on_bls12_377::EdwardsParameters
         )

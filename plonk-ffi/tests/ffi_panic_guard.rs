@@ -60,6 +60,8 @@ fn a_proof_that_panics_the_verifier_is_refused_not_aborting() {
     let code = plonk_verify(1, crafted.as_ptr(), crafted.len(), pi.as_ptr(), pi.len());
 
     assert_eq!(code, ERR_PANIC);
+    // Under the current rules the same proof is refused before any lookup could panic.
+    assert_eq!(plonk_verify2(1, crafted.as_ptr(), crafted.len(), pi.as_ptr(), pi.len()), 0);
     // The library still works afterwards (a poisoned lock does not stop later calls).
     assert_eq!(plonk_verify2(1, proof.as_ptr(), proof.len(), pi.as_ptr(), pi.len()), 1);
 }
