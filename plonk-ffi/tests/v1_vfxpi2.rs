@@ -12,6 +12,7 @@
 
 use ark_bls12_381::Fr;
 use ark_ff::Zero;
+use plonk_core::proof_system::ProofRules;
 use plonk_ffi::circuits_v1;
 use plonk_ffi::poseidon_v1::{self, FixedDepthTree, TREE_DEPTH};
 use plonk_ffi::vfxpi1::{self, encode_public_inputs_v3, Circuit, V2Fields};
@@ -48,8 +49,12 @@ fn fr(n: u64) -> Fr {
     Fr::from(n)
 }
 
+fn verify_legacy(circuit: Circuit, proof: &[u8], pi_blob: &[u8]) -> Result<bool, i32> {
+    circuits_v1::ffi_verify_vfxpi3(circuit as u8, proof, pi_blob, ProofRules::Legacy)
+}
+
 fn verify(circuit: Circuit, proof: &[u8], pi_blob: &[u8]) -> Result<bool, i32> {
-    circuits_v1::ffi_verify_vfxpi3(circuit as u8, proof, pi_blob)
+    circuits_v1::ffi_verify_vfxpi3(circuit as u8, proof, pi_blob, ProofRules::Current)
 }
 
 /// Field-element little-endian bytes made from a seed (always canonical).
@@ -130,7 +135,7 @@ fn native_note_hash_equals_the_circuits() {
     assert_eq!(vals[1], -poseidon_v1::note_hash_v2(amount, randomness, owner), "native Poseidon is not the circuits' Poseidon");
     let pos: Vec<usize> = pi.get_pos().copied().collect();
     assert_eq!(pos, circuits_v1::pi_positions(Circuit::Shield));
-    assert!(circuits_v1::ffi_verify_shield(&proof, &pi_bytes).unwrap());
+    assert!(circuits_v1::ffi_verify_shield(&proof, &pi_bytes, ProofRules::Current).unwrap());
 }
 
 // ─── Shield ───────────────────────────────────────────────────────────────────────────────────────────
@@ -155,7 +160,11 @@ fn shield_verifies_against_vfxpi3_and_refuses_tampering() {
     let v2_blob = vfxpi1::encode_public_inputs_v2(Circuit::Shield, &fields).unwrap();
     assert_eq!(verify(Circuit::Shield, &proof, &v2_blob), Err(plonk_ffi::ERR_PARAM));
     assert_eq!(plonk_ffi::plonk_verify(Circuit::Shield as u8, proof.as_ptr(), proof.len(), v2_blob.as_ptr(), v2_blob.len()), plonk_ffi::ERR_PARAM);
-    assert_eq!(plonk_ffi::plonk_verify(Circuit::Shield as u8, proof.as_ptr(), proof.len(), blob.as_ptr(), blob.len()), 1);
+    assert_eq!(plonk_ffi::plonk_verify2(Circuit::Shield as u8, proof.as_ptr(), proof.len(), v2_blob.as_ptr(), v2_blob.len()), plonk_ffi::ERR_PARAM);
+    assert_eq!(plonk_ffi::plonk_verify2(Circuit::Shield as u8, proof.as_ptr(), proof.len(), blob.as_ptr(), blob.len()), 1);
+    // The original rules refuse a proof this prover makes.
+    assert_eq!(plonk_ffi::plonk_verify(Circuit::Shield as u8, proof.as_ptr(), proof.len(), blob.as_ptr(), blob.len()), 0);
+    assert_eq!(verify_legacy(Circuit::Shield, &proof, &blob), Ok(false));
     // The asset tag is not a circuit input: the same proof verifies under any tag (it is bound by the tx hash).
     let other_tag = V2Fields { asset_tag: [1u8; 32], ..fields };
     assert_eq!(verify(Circuit::Shield, &proof, &encode_public_inputs_v3(Circuit::Shield, &other_tag).unwrap()), Ok(true));
@@ -184,7 +193,7 @@ fn unshield_two_notes_verifies_against_vfxpi3_built_from_the_tree() {
 
     let mut circuit = unshield_circuit(&tree, [(0, &notes[0], nk), (1, &notes[1], nk)], transparent, &change, fee, recipient);
     let (proof, pi_bytes) = circuits_v1::ffi_prove_unshield(&mut circuit).expect("prove unshield");
-    assert!(circuits_v1::ffi_verify_unshield(&proof, &pi_bytes).unwrap(), "prover's own public inputs");
+    assert!(circuits_v1::ffi_verify_unshield(&proof, &pi_bytes, ProofRules::Current).unwrap(), "prover's own public inputs");
 
     let blob = unshield_blob(root, fee, transparent, notes[0].nullifier(0), notes[1].nullifier(1), change.hash(), recipient);
     assert_eq!(verify(Circuit::Unshield, &proof, &blob), Ok(true), "VFXPI1 v3 built from native tree, nullifiers, change hash and recipient");
@@ -345,7 +354,7 @@ fn transfer_output_belongs_to_its_recipient() {
         pi_pos: Vec::new(),
     };
     let (proof, pi_bytes) = circuits_v1::ffi_prove_transfer(&mut circuit).expect("prove transfer");
-    assert!(circuits_v1::ffi_verify_transfer(&proof, &pi_bytes).unwrap());
+    assert!(circuits_v1::ffi_verify_transfer(&proof, &pi_bytes, ProofRules::Current).unwrap());
     let elems = [ins[0].nullifier(1), ins[1].nullifier(2), to_bob.hash(), change.hash()];
     let fields = V2Fields { asset_tag: [0u8; 32], merkle_root: root, amount_or_fee: fee, transparent: 0, elements: &elems };
     assert_eq!(verify(Circuit::Transfer, &proof, &encode_public_inputs_v3(Circuit::Transfer, &fields).unwrap()), Ok(true));
@@ -400,7 +409,7 @@ fn fee_verifies_against_vfxpi3() {
         pi_pos: Vec::new(),
     };
     let (proof, pi_bytes) = circuits_v1::ffi_prove_fee(&mut circuit).expect("prove fee");
-    assert!(circuits_v1::ffi_verify_fee(&proof, &pi_bytes).unwrap());
+    assert!(circuits_v1::ffi_verify_fee(&proof, &pi_bytes, ProofRules::Current).unwrap());
     let elems = [note.nullifier(1), change.hash()];
     let fields = V2Fields { asset_tag: [0u8; 32], merkle_root: root, amount_or_fee: fee, transparent: 0, elements: &elems };
     assert_eq!(verify(Circuit::Fee, &proof, &encode_public_inputs_v3(Circuit::Fee, &fields).unwrap()), Ok(true));
@@ -424,6 +433,7 @@ fn plonk_load_params_takes_vxplnk06_and_reports_the_v2_capabilities() {
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V1_CIRCUITS, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_VFXPI2_VERIFY, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V2_CIRCUITS, 0);
+    assert_ne!(caps & plonk_ffi::PLONK_CAP_VERIFY2, 0);
     assert_ne!(caps & plonk_ffi::PLONK_CAP_V1_PROVE, 0, "the params carry prover keys");
     // A VXPLNK03 header (the v1 circuits), a VXPLNK04 header (the seeded, forgeable setup) and a VXPLNK05 header (spend
     // position not bound to the Merkle path) are refused.

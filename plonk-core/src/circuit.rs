@@ -11,7 +11,7 @@ use crate::{
     error::{to_pc_error, Error},
     prelude::StandardComposer,
     proof_system::{
-        pi::PublicInputs, Proof, Prover, ProverKey, Verifier, VerifierKey,
+        pi::PublicInputs, Proof, ProofRules, Prover, ProverKey, Verifier, VerifierKey,
     },
 };
 use ark_ec::models::TEModelParameters;
@@ -291,7 +291,7 @@ where
 }
 
 /// Verifies a proof using the provided `CircuitInputs` & `VerifierKey`
-/// instances.
+/// instances, under [`ProofRules::Current`].
 pub fn verify_proof<F, P, PC>(
     u_params: &PC::UniversalParams,
     plonk_verifier_key: VerifierKey<F, PC>,
@@ -304,13 +304,37 @@ where
     P: TEModelParameters<BaseField = F>,
     PC: HomomorphicCommitment<F>,
 {
+    verify_proof_with_rules::<F, P, PC>(
+        u_params,
+        plonk_verifier_key,
+        proof,
+        public_inputs,
+        transcript_init,
+        ProofRules::Current,
+    )
+}
+
+/// [`verify_proof`] under `rules`.
+pub fn verify_proof_with_rules<F, P, PC>(
+    u_params: &PC::UniversalParams,
+    plonk_verifier_key: VerifierKey<F, PC>,
+    proof: &Proof<F, PC>,
+    public_inputs: &PublicInputs<F>,
+    transcript_init: &'static [u8],
+    rules: ProofRules,
+) -> Result<(), Error>
+where
+    F: PrimeField,
+    P: TEModelParameters<BaseField = F>,
+    PC: HomomorphicCommitment<F>,
+{
     let mut verifier: Verifier<F, P, PC> = Verifier::new(transcript_init);
     let padded_circuit_size = plonk_verifier_key.padded_circuit_size();
     verifier.verifier_key = Some(plonk_verifier_key);
     let (_, vk) = PC::trim(u_params, padded_circuit_size, 0, None)
         .map_err(to_pc_error::<F, PC>)?;
 
-    verifier.verify(proof, &vk, public_inputs)
+    verifier.verify_with_rules(proof, &vk, public_inputs, rules)
 }
 
 #[cfg(test)]

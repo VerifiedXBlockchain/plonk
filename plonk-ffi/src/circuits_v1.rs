@@ -12,7 +12,7 @@ use ark_serialize::CanonicalDeserialize;
 use once_cell::sync::Lazy;
 use plonk_core::commitment::KZG10;
 use plonk_core::proof_system::pi::PublicInputs;
-use plonk_core::proof_system::{ProverKey, VerifierKey};
+use plonk_core::proof_system::{ProofRules, ProverKey, VerifierKey};
 
 use verifiedx_circuits::circuit_keys::{self, ParamsBlobV1, PARAMS_MAGIC_V1};
 use verifiedx_circuits::circuits::fee::FeeCircuit;
@@ -160,10 +160,10 @@ pub fn ffi_prove_shield(amount_scaled: u64, randomness_fr: Fr, owner_pk: Fr) -> 
 }
 
 /// Verify a Shield circuit proof against the prover's own public-input encoding.
-pub fn ffi_verify_shield(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> {
+pub fn ffi_verify_shield(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::verify_shield(&state.pp, state.shield_vk.clone(), proof_bytes, pi_bytes)
+    circuit_keys::verify_shield(&state.pp, state.shield_vk.clone(), proof_bytes, pi_bytes, rules)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -179,10 +179,10 @@ pub fn ffi_prove_transfer(circuit: &mut TransferCircuit<Fr>) -> Result<(Vec<u8>,
 }
 
 /// Verify a Transfer circuit proof against the prover's own public-input encoding.
-pub fn ffi_verify_transfer(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> {
+pub fn ffi_verify_transfer(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::verify_transfer(&state.pp, state.transfer_vk.clone(), proof_bytes, pi_bytes)
+    circuit_keys::verify_transfer(&state.pp, state.transfer_vk.clone(), proof_bytes, pi_bytes, rules)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -198,10 +198,10 @@ pub fn ffi_prove_unshield(circuit: &mut UnshieldCircuit<Fr>) -> Result<(Vec<u8>,
 }
 
 /// Verify an Unshield circuit proof against the prover's own public-input encoding.
-pub fn ffi_verify_unshield(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> {
+pub fn ffi_verify_unshield(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::verify_unshield(&state.pp, state.unshield_vk.clone(), proof_bytes, pi_bytes)
+    circuit_keys::verify_unshield(&state.pp, state.unshield_vk.clone(), proof_bytes, pi_bytes, rules)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -217,10 +217,10 @@ pub fn ffi_prove_fee(circuit: &mut FeeCircuit<Fr>) -> Result<(Vec<u8>, Vec<u8>),
 }
 
 /// Verify a Fee circuit proof against the prover's own public-input encoding.
-pub fn ffi_verify_fee(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> {
+pub fn ffi_verify_fee(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::verify_fee(&state.pp, state.fee_vk.clone(), proof_bytes, pi_bytes)
+    circuit_keys::verify_fee(&state.pp, state.fee_vk.clone(), proof_bytes, pi_bytes, rules)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -229,14 +229,14 @@ pub fn ffi_verify_fee(proof_bytes: &[u8], pi_bytes: &[u8]) -> Result<bool, i32> 
 /// Verify a v2-circuit proof against a VFXPI1 **version 3** blob: the public inputs are rebuilt from the on-chain
 /// fields at the circuit's own positions, so a validator never has to trust the prover's encoding.
 /// `circuit_type` must equal the blob's circuit byte. Returns Ok(false) when the proof does not verify.
-pub fn ffi_verify_vfxpi3(circuit_type: u8, proof_bytes: &[u8], pi_blob: &[u8]) -> Result<bool, i32> {
+pub fn ffi_verify_vfxpi3(circuit_type: u8, proof_bytes: &[u8], pi_blob: &[u8], rules: ProofRules) -> Result<bool, i32> {
     let parsed = vfxpi1::parse_public_inputs_v3(pi_blob).map_err(|_| crate::ERR_PARAM)?;
     if parsed.circuit as u8 != circuit_type {
         return Err(crate::ERR_PARAM);
     }
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    let (positions, verify): (&Vec<usize>, fn(&UParams, VerifierKey<Fr, PC>, &[u8], &PublicInputs<Fr>) -> Result<bool, plonk_core::error::Error>) =
+    let (positions, verify): (&Vec<usize>, fn(&UParams, VerifierKey<Fr, PC>, &[u8], &PublicInputs<Fr>, ProofRules) -> Result<bool, plonk_core::error::Error>) =
         match parsed.circuit {
             Circuit::Shield => (&state.shield_pi_pos, circuit_keys::verify_shield_pi),
             Circuit::Transfer => (&state.transfer_pi_pos, circuit_keys::verify_transfer_pi),
@@ -250,7 +250,7 @@ pub fn ffi_verify_vfxpi3(circuit_type: u8, proof_bytes: &[u8], pi_blob: &[u8]) -
         Circuit::Unshield => state.unshield_vk.clone(),
         Circuit::Fee => state.fee_vk.clone(),
     };
-    verify(&state.pp, vk, proof_bytes, &pi).map_err(|_| crate::ERR_CRYPTO)
+    verify(&state.pp, vk, proof_bytes, &pi, rules).map_err(|_| crate::ERR_CRYPTO)
 }
 
 // ─── Witness deserialization helpers ───────────────────────────────

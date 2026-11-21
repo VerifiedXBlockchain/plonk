@@ -11,7 +11,7 @@ use crate::{
     commitment::HomomorphicCommitment,
     constraint_system::StandardComposer,
     error::Error,
-    proof_system::{widget::VerifierKey as PlonkVerifierKey, Proof},
+    proof_system::{widget::VerifierKey as PlonkVerifierKey, Proof, ProofRules},
 };
 use ark_ec::TEModelParameters;
 use ark_ff::PrimeField;
@@ -102,18 +102,30 @@ where
         self.preprocessed_transcript.append_message(label, message);
     }
 
-    /// Verifies a [`Proof`] using `pc_verifier_key` and `public_inputs`.
+    /// Verifies a [`Proof`] using `pc_verifier_key` and `public_inputs`, under [`ProofRules::Current`].
     pub fn verify(
         &self,
         proof: &Proof<F, PC>,
         pc_verifier_key: &PC::VerifierKey,
         public_inputs: &PublicInputs<F>,
     ) -> Result<(), Error> {
+        self.verify_with_rules(proof, pc_verifier_key, public_inputs, ProofRules::Current)
+    }
+
+    /// Verifies a [`Proof`] using `pc_verifier_key` and `public_inputs` under `rules`.
+    pub fn verify_with_rules(
+        &self,
+        proof: &Proof<F, PC>,
+        pc_verifier_key: &PC::VerifierKey,
+        public_inputs: &PublicInputs<F>,
+        rules: ProofRules,
+    ) -> Result<(), Error> {
         proof.verify::<P>(
             self.verifier_key.as_ref().unwrap(),
             &mut self.preprocessed_transcript.clone(),
             pc_verifier_key,
             public_inputs,
+            rules,
         )
     }
 }

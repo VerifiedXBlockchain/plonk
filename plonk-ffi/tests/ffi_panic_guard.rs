@@ -5,7 +5,7 @@
 //! or `vfx_plonk_v4.params` in the workspace root); without them the end-to-end test returns early and says so.
 
 use ark_bls12_381::Fr;
-use plonk_ffi::{circuits_v1, plonk_verify, ERR_PANIC};
+use plonk_ffi::{circuits_v1, plonk_verify, plonk_verify2, ERR_PANIC};
 
 fn params_loaded() -> bool {
     let path = std::env::var("VFX_PLONK_PARAMS").ok().or_else(|| {
@@ -54,14 +54,14 @@ fn a_proof_that_panics_the_verifier_is_refused_not_aborting() {
         return;
     }
     let (proof, pi) = circuits_v1::ffi_prove_shield(500_000_000, Fr::from(7u64), Fr::from(11u64)).expect("prove a shield");
-    assert_eq!(plonk_verify(1, proof.as_ptr(), proof.len(), pi.as_ptr(), pi.len()), 1, "the honest proof verifies");
+    assert_eq!(plonk_verify2(1, proof.as_ptr(), proof.len(), pi.as_ptr(), pi.len()), 1, "the honest proof verifies");
 
     let crafted = without_custom_evaluations(&proof);
     let code = plonk_verify(1, crafted.as_ptr(), crafted.len(), pi.as_ptr(), pi.len());
 
     assert_eq!(code, ERR_PANIC);
     // The library still works afterwards (a poisoned lock does not stop later calls).
-    assert_eq!(plonk_verify(1, proof.as_ptr(), proof.len(), pi.as_ptr(), pi.len()), 1);
+    assert_eq!(plonk_verify2(1, proof.as_ptr(), proof.len(), pi.as_ptr(), pi.len()), 1);
 }
 
 #[test]

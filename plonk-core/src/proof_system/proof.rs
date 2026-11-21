@@ -35,6 +35,17 @@ use merlin::Transcript;
 
 use super::pi::PublicInputs;
 
+/// Which rules [`Proof::verify`] applies to a proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProofRules {
+    /// The rules of the original verifier, kept so that proofs judged under them before are judged the same way.
+    /// The prover no longer makes proofs that pass them.
+    Legacy,
+    /// The rules the prover follows: every commitment and evaluation in the proof is absorbed into the transcript
+    /// before the challenges that follow it.
+    Current,
+}
+
 /// A [`Proof`] is a composition of `Commitment`s to the Witness, Permutation,
 /// Quotient, Shifted and Opening polynomials as well as the
 /// `ProofEvaluations`.
@@ -126,10 +137,12 @@ where
         transcript: &mut Transcript,
         verifier_key: &PC::VerifierKey,
         pub_inputs: &PublicInputs<F>,
+        rules: ProofRules,
     ) -> Result<(), Error>
     where
         P: TEModelParameters<BaseField = F>,
     {
+        let current = rules == ProofRules::Current;
         let domain =
             GeneralEvaluationDomain::<F>::new(plonk_verifier_key.n).ok_or(Error::InvalidEvalDomainSize {
                 log_size_of_group: plonk_verifier_key.n.trailing_zeros(),
@@ -200,6 +213,10 @@ where
 
         // Add commitment to permutation polynomial to transcript
         transcript.append(b"z", &self.z_comm);
+        if current {
+            // and the lookup permutation polynomial's, which the prover makes alongside it
+            transcript.append(b"z_2", &self.z_2_comm);
+        }
 
         // Compute quotient challenge
         let alpha = transcript.challenge_scalar(b"alpha");
@@ -307,6 +324,14 @@ where
             &self.evaluations.lookup_evals.h1_next_eval,
         );
         transcript.append(b"h_2_eval", &self.evaluations.lookup_evals.h2_eval);
+        if current {
+            transcript
+                .append(b"table_eval", &self.evaluations.lookup_evals.table_eval);
+            transcript.append(
+                b"table_next_eval",
+                &self.evaluations.lookup_evals.table_next_eval,
+            );
+        }
 
         self.evaluations
             .custom_evals

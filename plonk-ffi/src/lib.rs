@@ -66,6 +66,10 @@ pub const PLONK_CAP_VFXPI2_VERIFY: u32 = 32;
 /// witness formats of `plonk_prove_*` are the v2 ones (see each function), `plonk_prove_shield` takes `owner_pk`,
 /// and `poseidon_owner_pk` / `poseidon_note_hash_v2` exist. Matches C# `PlonkNative.CapV2Circuits`.
 pub const PLONK_CAP_V2_CIRCUITS: u32 = 64;
+/// Bit 7: `plonk_verify2` exists and judges proofs under the current rules, and `plonk_prove_*` make proofs under them.
+/// `plonk_verify` keeps the original rules (for proofs judged under them before); it refuses a proof made by this
+/// library. Matches C# `PlonkNative.CapVerify2`.
+pub const PLONK_CAP_VERIFY2: u32 = 128;
 
 #[no_mangle]
 pub extern "C" fn plonk_capabilities() -> u32 {
@@ -80,7 +84,7 @@ pub extern "C" fn plonk_capabilities() -> u32 {
     drop(guard);
     // v1 real circuit capabilities
     if circuits_v1::is_v1_loaded() {
-        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY | PLONK_CAP_V2_CIRCUITS;
+        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY | PLONK_CAP_V2_CIRCUITS | PLONK_CAP_VERIFY2;
         if circuits_v1::has_v1_prover_keys() {
             c |= PLONK_CAP_V1_PROVE;
         }
@@ -475,6 +479,8 @@ pub extern "C" fn merkle_root_from_path_v1(leaf: *const u8, position: u64, path:
 })
 }
 
+/// Verifies a proof under the original rules (`ProofRules::Legacy`), for proofs judged under them before. A proof made
+/// by this library's provers does not pass them; see `plonk_verify2`.
 #[no_mangle]
 pub extern "C" fn plonk_verify(
     circuit_type: u8,
@@ -482,6 +488,30 @@ pub extern "C" fn plonk_verify(
     proof_len: usize,
     public_inputs: *const u8,
     public_inputs_len: usize,
+) -> i32 {
+    verify_under(circuit_type, proof, proof_len, public_inputs, public_inputs_len, plonk_core::proof_system::ProofRules::Legacy)
+}
+
+/// Verifies a proof under the current rules (`ProofRules::Current`), the ones this library's provers follow. Same
+/// arguments and results as `plonk_verify`; the v1 circuits must be loaded (`ERR_NOT_IMPLEMENTED` otherwise).
+#[no_mangle]
+pub extern "C" fn plonk_verify2(
+    circuit_type: u8,
+    proof: *const u8,
+    proof_len: usize,
+    public_inputs: *const u8,
+    public_inputs_len: usize,
+) -> i32 {
+    verify_under(circuit_type, proof, proof_len, public_inputs, public_inputs_len, plonk_core::proof_system::ProofRules::Current)
+}
+
+fn verify_under(
+    circuit_type: u8,
+    proof: *const u8,
+    proof_len: usize,
+    public_inputs: *const u8,
+    public_inputs_len: usize,
+    rules: plonk_core::proof_system::ProofRules,
 ) -> i32 {
     ffi_guard!({
     if proof.is_null() || public_inputs.is_null() {
@@ -504,7 +534,7 @@ pub extern "C" fn plonk_verify(
             if vfxpi1::version(pi_slice) != Some(vfxpi1::VERSION_3) {
                 return ERR_PARAM;
             }
-            return match circuits_v1::ffi_verify_vfxpi3(circuit_type, proof_slice, pi_slice) {
+            return match circuits_v1::ffi_verify_vfxpi3(circuit_type, proof_slice, pi_slice, rules) {
                 Ok(true) => 1,
                 Ok(false) => 0,
                 Err(e) => e,
@@ -512,10 +542,10 @@ pub extern "C" fn plonk_verify(
         }
         // Otherwise the prover's own PublicInputs encoding (what plonk_prove_* returns).
         let result = match circuit_type {
-            1 => circuits_v1::ffi_verify_shield(proof_slice, pi_slice),
-            0 => circuits_v1::ffi_verify_transfer(proof_slice, pi_slice),
-            2 => circuits_v1::ffi_verify_unshield(proof_slice, pi_slice),
-            3 => circuits_v1::ffi_verify_fee(proof_slice, pi_slice),
+            1 => circuits_v1::ffi_verify_shield(proof_slice, pi_slice, rules),
+            0 => circuits_v1::ffi_verify_transfer(proof_slice, pi_slice, rules),
+            2 => circuits_v1::ffi_verify_unshield(proof_slice, pi_slice, rules),
+            3 => circuits_v1::ffi_verify_fee(proof_slice, pi_slice, rules),
             _ => return ERR_PARAM,
         };
         return match result {
@@ -525,7 +555,10 @@ pub extern "C" fn plonk_verify(
         };
     }
 
-    // Fall back to v0 digest-binding circuit
+    // Fall back to v0 digest-binding circuit (the original rules only)
+    if rules != plonk_core::proof_system::ProofRules::Legacy {
+        return ERR_NOT_IMPLEMENTED;
+    }
     let parsed = match vfxpi1::parse_public_inputs(pi_slice) {
         Ok(c) => c,
         Err(()) => return ERR_PARAM,

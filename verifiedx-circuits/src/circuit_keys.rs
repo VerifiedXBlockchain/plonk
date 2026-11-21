@@ -7,11 +7,11 @@
 use ark_bls12_381::{Bls12_381, Fr};
 use ark_ed_on_bls12_381::EdwardsParameters;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use plonk_core::circuit::{verify_proof, Circuit};
+use plonk_core::circuit::{verify_proof_with_rules, Circuit};
 use plonk_core::commitment::KZG10;
 use plonk_core::error::Error;
 use plonk_core::proof_system::pi::PublicInputs;
-use plonk_core::proof_system::{Proof, ProverKey, VerifierKey};
+use plonk_core::proof_system::{Proof, ProofRules, ProverKey, VerifierKey};
 
 use crate::circuits::fee::FeeCircuit;
 use crate::circuits::shield::ShieldCircuit;
@@ -116,11 +116,12 @@ pub fn verify_shield(
     vk: VerifierKey<Fr, PC>,
     proof_bytes: &[u8],
     pi_bytes: &[u8],
+    rules: ProofRules,
 ) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
     let pi = deserialize_pi(pi_bytes)?;
 
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_SHIELD_V2") {
+    match verify_proof_with_rules::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_SHIELD_V2", rules) {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -149,11 +150,12 @@ pub fn verify_transfer(
     vk: VerifierKey<Fr, PC>,
     proof_bytes: &[u8],
     pi_bytes: &[u8],
+    rules: ProofRules,
 ) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
     let pi = deserialize_pi(pi_bytes)?;
 
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_TRANSFER_V2") {
+    match verify_proof_with_rules::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_TRANSFER_V2", rules) {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -182,11 +184,12 @@ pub fn verify_unshield(
     vk: VerifierKey<Fr, PC>,
     proof_bytes: &[u8],
     pi_bytes: &[u8],
+    rules: ProofRules,
 ) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
     let pi = deserialize_pi(pi_bytes)?;
 
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_UNSHIELD_V2") {
+    match verify_proof_with_rules::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_UNSHIELD_V2", rules) {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -215,11 +218,12 @@ pub fn verify_fee(
     vk: VerifierKey<Fr, PC>,
     proof_bytes: &[u8],
     pi_bytes: &[u8],
+    rules: ProofRules,
 ) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
     let pi = deserialize_pi(pi_bytes)?;
 
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_FEE_V2") {
+    match verify_proof_with_rules::<Fr, EdwardsParameters, PC>(pp, vk, &proof, &pi, b"VFX_FEE_V2", rules) {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -282,9 +286,9 @@ pub fn public_inputs_from_values(positions: &[usize], values: &[Fr]) -> Result<P
 }
 
 /// Verify a Shield proof against already-built public inputs.
-pub fn verify_shield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
+pub fn verify_shield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>, rules: ProofRules) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_SHIELD_V2") {
+    match verify_proof_with_rules::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_SHIELD_V2", rules) {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -292,9 +296,9 @@ pub fn verify_shield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_byt
 }
 
 /// Verify a Transfer proof against already-built public inputs.
-pub fn verify_transfer_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
+pub fn verify_transfer_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>, rules: ProofRules) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_TRANSFER_V2") {
+    match verify_proof_with_rules::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_TRANSFER_V2", rules) {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -302,9 +306,9 @@ pub fn verify_transfer_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_b
 }
 
 /// Verify an Unshield proof against already-built public inputs.
-pub fn verify_unshield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
+pub fn verify_unshield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>, rules: ProofRules) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_UNSHIELD_V2") {
+    match verify_proof_with_rules::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_UNSHIELD_V2", rules) {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),
@@ -312,9 +316,9 @@ pub fn verify_unshield_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_b
 }
 
 /// Verify a Fee proof against already-built public inputs.
-pub fn verify_fee_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>) -> Result<bool, Error> {
+pub fn verify_fee_pi(pp: &UniversalParams, vk: VerifierKey<Fr, PC>, proof_bytes: &[u8], pi: &PublicInputs<Fr>, rules: ProofRules) -> Result<bool, Error> {
     let proof = deserialize_proof(proof_bytes)?;
-    match verify_proof::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_FEE_V2") {
+    match verify_proof_with_rules::<Fr, EdwardsParameters, PC>(pp, vk, &proof, pi, b"VFX_FEE_V2", rules) {
         Ok(()) => Ok(true),
         Err(Error::ProofVerificationError) => Ok(false),
         Err(e) => Err(e),

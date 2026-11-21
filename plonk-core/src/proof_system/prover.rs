@@ -390,6 +390,9 @@ where
             PC::commit(commit_key, &[label_polynomial!(z_2_poly)], None)
                 .map_err(to_pc_error::<F, PC>)?;
 
+        // Add lookup permutation polynomial commitment to transcript.
+        transcript.append(b"z_2", z_2_poly_commit[0].commitment());
+
         // 3. Compute public inputs polynomial.
         let pi_poly = self.cs.get_pi().into_dense_poly(n);
 
@@ -554,6 +557,11 @@ where
         transcript
             .append(b"h_1_next_eval", &evaluations.lookup_evals.h1_next_eval);
         transcript.append(b"h_2_eval", &evaluations.lookup_evals.h2_eval);
+        transcript.append(b"table_eval", &evaluations.lookup_evals.table_eval);
+        transcript.append(
+            b"table_next_eval",
+            &evaluations.lookup_evals.table_next_eval,
+        );
 
         // Third, all evals needed for custom gates
         evaluations
