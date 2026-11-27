@@ -13,7 +13,8 @@ use crate::{
     error::{to_pc_error, Error},
     label_polynomial,
     proof_system::{
-        linearisation_poly, proof::Proof, quotient_poly, ProverKey,
+        linearisation_poly, proof::Proof, quotient_poly, ProofRules, ProverKey,
+        VerifierKey as PlonkVerifierKey,
     },
     transcript::TranscriptProtocol,
 };
@@ -168,6 +169,27 @@ where
         prover_key: &ProverKey<F>,
         _data: PhantomData<PC>,
     ) -> Result<Proof<F, PC>, Error> {
+        self.prove_under(commit_key, prover_key, None)
+    }
+
+    /// [`Prover::prove_with_preprocessed`] under [`ProofRules::KeyBound`]: `verifier_key`, the verifier key of this
+    /// circuit, is absorbed into the transcript before the public inputs. The proof verifies only against that key.
+    pub fn prove_with_preprocessed_key_bound(
+        &self,
+        commit_key: &PC::CommitterKey,
+        prover_key: &ProverKey<F>,
+        verifier_key: &PlonkVerifierKey<F, PC>,
+    ) -> Result<Proof<F, PC>, Error> {
+        self.prove_under(commit_key, prover_key, Some(verifier_key))
+    }
+
+    /// Proves under [`ProofRules::Current`], or under [`ProofRules::KeyBound`] when `bound_key` is given.
+    fn prove_under(
+        &self,
+        commit_key: &PC::CommitterKey,
+        prover_key: &ProverKey<F>,
+        bound_key: Option<&PlonkVerifierKey<F, PC>>,
+    ) -> Result<Proof<F, PC>, Error> {
         let domain =
             GeneralEvaluationDomain::new(self.cs.circuit_bound()).ok_or(Error::InvalidEvalDomainSize {
                 log_size_of_group: self.cs.circuit_bound().trailing_zeros(),
@@ -179,6 +201,10 @@ where
         // We assume that the Transcript has been seeded with the preprocessed
         // Commitments
         let mut transcript = self.preprocessed_transcript.clone();
+
+        if let Some(verifier_key) = bound_key {
+            ProofRules::KeyBound.absorb_verifier_key(verifier_key, &mut transcript);
+        }
 
         // Append Public Inputs to the transcript
         transcript.append(b"pi", self.cs.get_pi());
@@ -713,6 +739,25 @@ where
         // Clear witness and reset composer variables
         self.clear_witness();
 
+        Ok(proof)
+    }
+
+    /// [`Prover::prove`] under [`ProofRules::KeyBound`], with `verifier_key` the verifier key of this circuit.
+    pub fn prove_key_bound(
+        &mut self,
+        commit_key: &PC::CommitterKey,
+        verifier_key: &PlonkVerifierKey<F, PC>,
+    ) -> Result<Proof<F, PC>, Error> {
+        if self.prover_key.is_none() {
+            self.prover_key = Some(self.cs.preprocess_prover(
+                commit_key,
+                &mut self.preprocessed_transcript,
+                PhantomData::<PC>,
+            )?);
+        }
+        let prover_key = self.prover_key.as_ref().unwrap();
+        let proof = self.prove_with_preprocessed_key_bound(commit_key, prover_key, verifier_key)?;
+        self.clear_witness();
         Ok(proof)
     }
 }

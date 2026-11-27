@@ -254,8 +254,26 @@ where
     F: PrimeField,
     PC: HomomorphicCommitment<F>,
 {
-    /// Adds the circuit description to the transcript.
+    /// Adds the circuit description to the transcript, without the lookup selector and tables (what
+    /// preprocessing seeds, under every [`ProofRules`](super::ProofRules)).
     pub(crate) fn seed_transcript<T>(&self, transcript: &mut T)
+    where
+        T: TranscriptProtocol,
+    {
+        self.seed(transcript, false)
+    }
+
+    /// Adds the whole circuit description to the transcript: everything [`Self::seed_transcript`] adds, then the
+    /// lookup selector and the four table columns, then the circuit size. What a proof's transcript starts with under
+    /// [`ProofRules::KeyBound`](super::ProofRules::KeyBound), on the prover's side and the verifier's.
+    pub(crate) fn seed_transcript_key_bound<T>(&self, transcript: &mut T)
+    where
+        T: TranscriptProtocol,
+    {
+        self.seed(transcript, true)
+    }
+
+    fn seed<T>(&self, transcript: &mut T, with_lookup: bool)
     where
         T: TranscriptProtocol,
     {
@@ -283,6 +301,14 @@ where
         transcript.append(b"right_sigma", &self.permutation.right_sigma);
         transcript.append(b"out_sigma", &self.permutation.out_sigma);
         transcript.append(b"fourth_sigma", &self.permutation.fourth_sigma);
+        if with_lookup {
+            // Inside the circuit description, which the size separator closes.
+            transcript.append(b"q_lookup", &self.lookup.q_lookup);
+            transcript.append(b"table_1", &self.lookup.table_1);
+            transcript.append(b"table_2", &self.lookup.table_2);
+            transcript.append(b"table_3", &self.lookup.table_3);
+            transcript.append(b"table_4", &self.lookup.table_4);
+        }
         transcript.circuit_domain_sep(self.n as u64);
     }
 }

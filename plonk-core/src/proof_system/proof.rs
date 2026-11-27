@@ -44,6 +44,25 @@ pub enum ProofRules {
     /// The rules the prover follows: every commitment and evaluation in the proof is absorbed into the transcript
     /// before the challenges that follow it, and every evaluation is opened against a commitment.
     Current,
+    /// [`ProofRules::Current`], and the transcript starts with the whole verifier key: every selector, permutation,
+    /// lookup selector and lookup table commitment and the circuit size, absorbed before the public inputs, so every
+    /// challenge depends on the key the proof is checked against. A prover makes these proofs only when handed the
+    /// circuit's verifier key ([`Prover::prove_key_bound`](super::Prover::prove_key_bound)).
+    KeyBound,
+}
+
+impl ProofRules {
+    /// Absorbs into `transcript` what these rules bind of the verifier key before the public inputs. The prover and
+    /// the verifier both call this, so their transcripts start the same.
+    pub(crate) fn absorb_verifier_key<F, PC>(self, verifier_key: &PlonkVerifierKey<F, PC>, transcript: &mut Transcript)
+    where
+        F: PrimeField,
+        PC: HomomorphicCommitment<F>,
+    {
+        if self == ProofRules::KeyBound {
+            verifier_key.seed_transcript_key_bound(transcript);
+        }
+    }
 }
 
 /// The labels of [`CustomEvaluations`](super::linearisation_poly::CustomEvaluations) a proof carries under
@@ -157,7 +176,8 @@ where
     where
         P: TEModelParameters<BaseField = F>,
     {
-        let current = rules == ProofRules::Current;
+        // Every check of the current rules holds under the key-bound ones too.
+        let current = rules != ProofRules::Legacy;
         let domain =
             GeneralEvaluationDomain::<F>::new(plonk_verifier_key.n).ok_or(Error::InvalidEvalDomainSize {
                 log_size_of_group: plonk_verifier_key.n.trailing_zeros(),
@@ -182,6 +202,8 @@ where
         {
             return Err(Error::ProofVerificationError);
         }
+
+        rules.absorb_verifier_key(plonk_verifier_key, transcript);
 
         // Append Public Inputs to the transcript
         transcript.append(b"pi", pub_inputs);
@@ -870,16 +892,163 @@ mod test {
         }
     }
 
+    /// Under the earlier rules nothing changed: the transcript `Verifier::preprocess` seeds from a fixed circuit and
+    /// setup is the one it was before `ProofRules::KeyBound` existed, and a proof the prover made then (the fixture,
+    /// made by the prover at db71528) still verifies under the current rules, and not under the key-bound ones.
+    #[test]
+    fn the_earlier_rules_are_unchanged() {
+        use crate::proof_system::Verifier;
+        use ark_poly_commit::PolynomialCommitment;
+        type F = <Bls12_381 as ark_ec::PairingEngine>::Fr;
+        type P = ark_ed_on_bls12_381::EdwardsParameters;
+        type PC = crate::commitment::KZG10<Bls12_381>;
+        let pp = PC::setup(2 * 200, None, &mut ark_std::test_rng()).unwrap();
+        let mut verifier = Verifier::<F, P, PC>::new(b"seed");
+        let c = verifier.mut_cs();
+        let a = c.add_input(F::from(3u64));
+        c.constrain_to_constant(a, F::from(3u64), None);
+        let (ck, vk) = PC::trim(&pp, verifier.circuit_bound(), 0, None).unwrap();
+        verifier.preprocess(&ck).unwrap();
+
+        let challenge: F = verifier.preprocessed_transcript.clone().challenge_scalar(b"zeta");
+        let mut bytes = Vec::new();
+        challenge.serialize(&mut bytes).unwrap();
+        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+        assert_eq!(hex, "20e937cdde64fde57d1dababf39dcda6278e4fbb330e0cbc492fe2db0f365300");
+
+        let proof = Proof::<F, PC>::deserialize(&include_bytes!("testdata/current_rules_proof.bin")[..]).unwrap();
+        let pi = PublicInputs::<F>::deserialize(&include_bytes!("testdata/current_rules_pi.bin")[..]).unwrap();
+        assert!(verifier.verify_with_rules(&proof, &vk, &pi, ProofRules::Current).is_ok());
+        assert!(verifier.verify_with_rules(&proof, &vk, &pi, ProofRules::KeyBound).is_err());
+        assert!(verifier.verify_with_rules(&proof, &vk, &pi, ProofRules::Legacy).is_err());
+    }
+
+    /// A circuit with a lookup table, and its verifier.
+    fn lookup_circuit<F, P, PC>(
+    ) -> (PC::CommitterKey, PC::VerifierKey, crate::proof_system::Verifier<F, P, PC>, fn(&mut crate::constraint_system::StandardComposer<F, P>))
+    where
+        F: PrimeField,
+        P: TEModelParameters<BaseField = F>,
+        PC: HomomorphicCommitment<F>,
+    {
+        use crate::proof_system::Verifier;
+        use rand_core::OsRng;
+        fn gadget<F: PrimeField, P: TEModelParameters<BaseField = F>>(c: &mut crate::constraint_system::StandardComposer<F, P>) {
+            c.lookup_table = crate::lookup::LookupTable::<F>::xor_table(0, 2);
+            let one = c.add_input(F::one());
+            let two = c.add_input(F::from(2u64));
+            let three = c.add_input(F::from(3u64));
+            let negative_one = c.add_input(-F::one());
+            c.lookup_gate(one, two, three, Some(negative_one), None);
+            let a = c.add_input(F::from(3u64));
+            c.constrain_to_constant(a, F::from(3u64), None);
+        }
+        let pp = PC::setup(2 * 200, None, &mut OsRng).unwrap();
+        let mut verifier = Verifier::<F, P, PC>::new(b"rules");
+        gadget::<F, P>(verifier.mut_cs());
+        let (ck, vk) = PC::trim(&pp, verifier.circuit_bound(), 0, None).unwrap();
+        verifier.preprocess(&ck).unwrap();
+        (ck, vk, verifier, gadget::<F, P>)
+    }
+
+    /// Two verifier keys that differ only in the lookup selector or one lookup table: under the key-bound rules the
+    /// challenges differ; under the current rules they are the same, both after preprocessing (whose seed leaves the
+    /// lookup out) and without it (the circuit API, which seeds nothing, so there even a gate selector is not bound).
+    fn test_key_bound_binds_the_lookup_key<F, P, PC>()
+    where
+        F: PrimeField,
+        P: TEModelParameters<BaseField = F>,
+        PC: HomomorphicCommitment<F>,
+    {
+        let (_, _, verifier, _) = lookup_circuit::<F, P, PC>();
+        let vk = verifier.verifier_key.clone().unwrap();
+        let other = vk.permutation.left_sigma.clone();
+        let mut variants = Vec::new();
+        for i in 0..5 {
+            let mut k = vk.clone();
+            let field = match i {
+                0 => &mut k.lookup.q_lookup,
+                1 => &mut k.lookup.table_1,
+                2 => &mut k.lookup.table_2,
+                3 => &mut k.lookup.table_3,
+                _ => &mut k.lookup.table_4,
+            };
+            let (mut a, mut b) = (Vec::new(), Vec::new());
+            field.serialize(&mut a).unwrap();
+            other.serialize(&mut b).unwrap();
+            assert_ne!(a, b, "the replacement is another commitment");
+            *field = other.clone();
+            variants.push(k);
+        }
+        // The first challenge a proof's transcript draws, from a key under `rules`, seeded by preprocessing or not.
+        let challenge = |key: &PlonkVerifierKey<F, PC>, rules: ProofRules, preprocessed: bool| -> F {
+            let mut t = Transcript::new(b"rules");
+            if preprocessed {
+                key.seed_transcript(&mut t);
+            }
+            rules.absorb_verifier_key(key, &mut t);
+            t.challenge_scalar(b"zeta")
+        };
+        for k in &variants {
+            for preprocessed in [true, false] {
+                assert_eq!(challenge(&vk, ProofRules::Current, preprocessed), challenge(k, ProofRules::Current, preprocessed));
+                assert_ne!(challenge(&vk, ProofRules::KeyBound, preprocessed), challenge(k, ProofRules::KeyBound, preprocessed));
+            }
+        }
+        let mut gate = vk.clone();
+        gate.arithmetic.q_m = other;
+        assert_eq!(challenge(&vk, ProofRules::Current, false), challenge(&gate, ProofRules::Current, false));
+        assert_ne!(challenge(&vk, ProofRules::KeyBound, false), challenge(&gate, ProofRules::KeyBound, false));
+    }
+
+    /// A proof made under the key-bound rules verifies under them and not under the current or original ones; a
+    /// proof made under the current rules verifies under them and not under the key-bound ones. Against a key with
+    /// another lookup table the key-bound proof is refused.
+    fn test_key_bound_rules<F, P, PC>()
+    where
+        F: PrimeField,
+        P: TEModelParameters<BaseField = F>,
+        PC: HomomorphicCommitment<F>,
+    {
+        use crate::proof_system::Prover;
+        let (ck, pc_vk, verifier, gadget) = lookup_circuit::<F, P, PC>();
+        let vk = verifier.verifier_key.clone().unwrap();
+        let prove = |bound: bool| {
+            let mut prover = Prover::<F, P, PC>::new(b"rules");
+            gadget(prover.mut_cs());
+            prover.preprocess(&ck).unwrap();
+            let pi = prover.cs.get_pi().clone();
+            let proof = if bound { prover.prove_key_bound(&ck, &vk) } else { prover.prove(&ck) };
+            (proof.unwrap(), pi)
+        };
+
+        let (bound, pi) = prove(true);
+        assert!(verifier.verify_with_rules(&bound, &pc_vk, &pi, ProofRules::KeyBound).is_ok());
+        assert!(verifier.verify_with_rules(&bound, &pc_vk, &pi, ProofRules::Current).is_err());
+        assert!(verifier.verify_with_rules(&bound, &pc_vk, &pi, ProofRules::Legacy).is_err());
+
+        let (current, pi) = prove(false);
+        assert!(verifier.verify_with_rules(&current, &pc_vk, &pi, ProofRules::Current).is_ok());
+        assert!(verifier.verify_with_rules(&current, &pc_vk, &pi, ProofRules::KeyBound).is_err());
+
+        let mut other = crate::proof_system::Verifier::<F, P, PC>::new(b"rules");
+        other.preprocessed_transcript = verifier.preprocessed_transcript.clone();
+        let mut key = vk.clone();
+        key.lookup.table_2 = vk.permutation.left_sigma.clone();
+        other.verifier_key = Some(key);
+        assert!(other.verify_with_rules(&bound, &pc_vk, &pi, ProofRules::KeyBound).is_err());
+    }
+
     // Bls12-381 tests
     batch_test_kzg!(
-        [test_serde_proof, test_proof_rules],
+        [test_serde_proof, test_proof_rules, test_key_bound_binds_the_lookup_key, test_key_bound_rules],
         [] => (
             Bls12_381, ark_ed_on_bls12_381::EdwardsParameters
         )
     );
     // Bls12-377 tests
     batch_test_kzg!(
-        [test_serde_proof, test_proof_rules],
+        [test_serde_proof, test_proof_rules, test_key_bound_binds_the_lookup_key, test_key_bound_rules],
         [] => (
             Bls12_377, ark_ed_on_bls12_377::EdwardsParameters
         )

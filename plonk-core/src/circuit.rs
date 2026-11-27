@@ -286,6 +286,31 @@ where
         Ok((prover.prove(&ck)?, pi))
     }
 
+    /// [`Circuit::gen_proof`] under [`ProofRules::KeyBound`]: `verifier_key` is this circuit's verifier key (the one
+    /// [`Circuit::compile`] returned with `prover_key`), and the proof verifies only against it.
+    fn gen_proof_key_bound<PC>(
+        &mut self,
+        u_params: &PC::UniversalParams,
+        prover_key: ProverKey<F>,
+        verifier_key: &VerifierKey<F, PC>,
+        transcript_init: &'static [u8],
+    ) -> Result<(Proof<F, PC>, PublicInputs<F>), Error>
+    where
+        F: PrimeField,
+        P: TEModelParameters<BaseField = F>,
+        PC: HomomorphicCommitment<F>,
+    {
+        let circuit_size = self.padded_circuit_size();
+        let (ck, _) = PC::trim(u_params, circuit_size, 0, None)
+            .map_err(to_pc_error::<F, PC>)?;
+        let mut prover = Prover::new(transcript_init);
+        self.gadget(prover.mut_cs())?;
+        prover.prover_key = Some(prover_key);
+        let pi = prover.cs.get_pi().clone();
+
+        Ok((prover.prove_key_bound(&ck, verifier_key)?, pi))
+    }
+
     /// Returns the Circuit size padded to the next power of two.
     fn padded_circuit_size(&self) -> usize;
 }
@@ -530,6 +555,49 @@ mod test {
         let mut saw = proof;
         saw.saw_opening.random_v = Some(F::zero());
         assert!(verify_proof::<F, P, PC>(&pp, vk, &saw, &pi, b"Test").is_err());
+        Ok(())
+    }
+
+    /// Through `gen_proof` / `verify_proof_with_rules` (the path that sets the keys directly, without preprocessing):
+    /// a proof made under the key-bound rules verifies under them only, a proof made under the current rules under
+    /// those only, and a key-bound proof checked against a key with another lookup table is refused.
+    #[test]
+    #[allow(non_snake_case)]
+    fn key_bound_proofs_through_the_circuit_api_on_Bls12_381() -> Result<(), Error> {
+        use ark_ec::ModelParameters;
+        use ark_poly_commit::PolynomialCommitment;
+        type F = <Bls12_381 as PairingEngine>::Fr;
+        type P = ark_ed_on_bls12_381::EdwardsParameters;
+        type PC = crate::commitment::KZG10<Bls12_381>;
+        let pp = PC::setup(1 << 10, None, &mut OsRng).map_err(to_pc_error::<F, PC>)?;
+        let mut circuit = TestCircuit::<F, P>::default();
+        let (pk, (vk, _pi_pos)) = circuit.compile::<PC>(&pp)?;
+        let (x, y) = P::AFFINE_GENERATOR_COEFFS;
+        let generator: GroupAffine<P> = GroupAffine::new(x, y);
+        let witness = || TestCircuit::<F, P> {
+            a: F::from(20u64),
+            b: F::from(5u64),
+            c: F::from(25u64),
+            d: F::from(100u64),
+            e: <P as ModelParameters>::ScalarField::from(2u64),
+            f: AffineCurve::mul(&generator, <P as ModelParameters>::ScalarField::from(2u64).into_repr()).into_affine(),
+        };
+        let verify = |vk: &VerifierKey<F, PC>, proof: &Proof<F, PC>, pi: &PublicInputs<F>, rules| {
+            verify_proof_with_rules::<F, P, PC>(&pp, vk.clone(), proof, pi, b"Test", rules)
+        };
+
+        let (bound, pi) = witness().gen_proof_key_bound::<PC>(&pp, pk.clone(), &vk, b"Test")?;
+        assert!(verify(&vk, &bound, &pi, ProofRules::KeyBound).is_ok());
+        assert!(verify(&vk, &bound, &pi, ProofRules::Current).is_err());
+        assert!(verify(&vk, &bound, &pi, ProofRules::Legacy).is_err());
+
+        let (current, pi) = witness().gen_proof::<PC>(&pp, pk, b"Test")?;
+        assert!(verify(&vk, &current, &pi, ProofRules::Current).is_ok());
+        assert!(verify(&vk, &current, &pi, ProofRules::KeyBound).is_err());
+
+        let mut other_table = vk.clone();
+        other_table.lookup.table_1 = vk.permutation.left_sigma.clone();
+        assert!(verify(&other_table, &bound, &pi, ProofRules::KeyBound).is_err());
         Ok(())
     }
 

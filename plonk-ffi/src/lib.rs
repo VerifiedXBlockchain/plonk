@@ -74,6 +74,11 @@ pub const PLONK_CAP_VERIFY2: u32 = 128;
 /// `plonk_verify2` and `plonk_prove_*` use the circuits built that way; `plonk_verify` keeps the params file's keys.
 /// Matches C# `PlonkNative.CapBoundHashCapacity`.
 pub const PLONK_CAP_BOUND_HASH_CAPACITY: u32 = 256;
+/// Bit 9: `plonk_verify3` exists and judges proofs under the key-bound rules (`ProofRules::KeyBound`: the current rules,
+/// with the whole verifier key, lookup selector and tables included, absorbed into the transcript before the public
+/// inputs), and `plonk_prove_shield3` / `plonk_prove_transfer3` / `plonk_prove_unshield3` / `plonk_prove_fee3` make
+/// proofs under them. `plonk_verify`, `plonk_verify2` and `plonk_prove_*` are unchanged. Matches C# `PlonkNative.CapVerify3`.
+pub const PLONK_CAP_VERIFY3: u32 = 512;
 
 #[no_mangle]
 pub extern "C" fn plonk_capabilities() -> u32 {
@@ -88,7 +93,7 @@ pub extern "C" fn plonk_capabilities() -> u32 {
     drop(guard);
     // v1 real circuit capabilities
     if circuits_v1::is_v1_loaded() {
-        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY | PLONK_CAP_V2_CIRCUITS | PLONK_CAP_VERIFY2 | PLONK_CAP_BOUND_HASH_CAPACITY;
+        c |= PLONK_CAP_V1_CIRCUITS | PLONK_CAP_VFXPI2_VERIFY | PLONK_CAP_V2_CIRCUITS | PLONK_CAP_VERIFY2 | PLONK_CAP_BOUND_HASH_CAPACITY | PLONK_CAP_VERIFY3;
         if circuits_v1::has_v1_prover_keys() {
             c |= PLONK_CAP_V1_PROVE;
         }
@@ -509,6 +514,20 @@ pub extern "C" fn plonk_verify2(
     verify_under(circuit_type, proof, proof_len, public_inputs, public_inputs_len, plonk_core::proof_system::ProofRules::Current)
 }
 
+/// Verifies a proof under the key-bound rules (`ProofRules::KeyBound`), the ones `plonk_prove_*3` follow: the current
+/// rules, with the circuit's whole verifier key absorbed into the transcript first. Same arguments and results as
+/// `plonk_verify2`; a proof from `plonk_prove_*` does not pass, nor one from `plonk_prove_*3` under `plonk_verify2`.
+#[no_mangle]
+pub extern "C" fn plonk_verify3(
+    circuit_type: u8,
+    proof: *const u8,
+    proof_len: usize,
+    public_inputs: *const u8,
+    public_inputs_len: usize,
+) -> i32 {
+    verify_under(circuit_type, proof, proof_len, public_inputs, public_inputs_len, plonk_core::proof_system::ProofRules::KeyBound)
+}
+
 fn verify_under(
     circuit_type: u8,
     proof: *const u8,
@@ -651,6 +670,37 @@ pub unsafe extern "C" fn plonk_prove_shield(
     pi_out: *mut u8,
     pi_out_len: *mut usize,
 ) -> i32 {
+    prove_shield_under(amount_scaled, randomness, owner_pk, proof_out, proof_out_len, pi_out, pi_out_len, plonk_core::proof_system::ProofRules::Current)
+}
+
+/// `plonk_prove_shield` under the key-bound rules (`plonk_verify3`): same arguments, witness format and results; the
+/// proof passes `plonk_verify3` and not `plonk_verify2`.
+///
+/// # Safety
+/// As `plonk_prove_shield`.
+#[no_mangle]
+pub unsafe extern "C" fn plonk_prove_shield3(
+    amount_scaled: u64,
+    randomness: *const u8,
+    owner_pk: *const u8,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+) -> i32 {
+    prove_shield_under(amount_scaled, randomness, owner_pk, proof_out, proof_out_len, pi_out, pi_out_len, plonk_core::proof_system::ProofRules::KeyBound)
+}
+
+unsafe fn prove_shield_under(
+    amount_scaled: u64,
+    randomness: *const u8,
+    owner_pk: *const u8,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+    rules: plonk_core::proof_system::ProofRules,
+) -> i32 {
     ffi_guard!({
     if randomness.is_null() || owner_pk.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
         return ERR_NULL;
@@ -667,7 +717,7 @@ pub unsafe extern "C" fn plonk_prove_shield(
         Err(_) => return ERR_CRYPTO,
     };
 
-    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_shield(amount_scaled, randomness_fr, owner_fr) {
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_shield_under(amount_scaled, randomness_fr, owner_fr, rules) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -703,6 +753,35 @@ pub unsafe extern "C" fn plonk_prove_transfer(
     proof_out_len: *mut usize,
     pi_out: *mut u8,
     pi_out_len: *mut usize,
+) -> i32 {
+    prove_transfer_under(witness_data, witness_data_len, proof_out, proof_out_len, pi_out, pi_out_len, plonk_core::proof_system::ProofRules::Current)
+}
+
+/// `plonk_prove_transfer` under the key-bound rules (`plonk_verify3`): same arguments, witness format and results; the
+/// proof passes `plonk_verify3` and not `plonk_verify2`.
+///
+/// # Safety
+/// As `plonk_prove_transfer`.
+#[no_mangle]
+pub unsafe extern "C" fn plonk_prove_transfer3(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+) -> i32 {
+    prove_transfer_under(witness_data, witness_data_len, proof_out, proof_out_len, pi_out, pi_out_len, plonk_core::proof_system::ProofRules::KeyBound)
+}
+
+unsafe fn prove_transfer_under(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+    rules: plonk_core::proof_system::ProofRules,
 ) -> i32 {
     ffi_guard!({
     if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
@@ -758,7 +837,7 @@ pub unsafe extern "C" fn plonk_prove_transfer(
         pi_pos: Vec::new(),
     };
 
-    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_transfer(&mut circuit) {
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_transfer_under(&mut circuit, rules) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -789,6 +868,35 @@ pub unsafe extern "C" fn plonk_prove_unshield(
     proof_out_len: *mut usize,
     pi_out: *mut u8,
     pi_out_len: *mut usize,
+) -> i32 {
+    prove_unshield_under(witness_data, witness_data_len, proof_out, proof_out_len, pi_out, pi_out_len, plonk_core::proof_system::ProofRules::Current)
+}
+
+/// `plonk_prove_unshield` under the key-bound rules (`plonk_verify3`): same arguments, witness format and results; the
+/// proof passes `plonk_verify3` and not `plonk_verify2`.
+///
+/// # Safety
+/// As `plonk_prove_unshield`.
+#[no_mangle]
+pub unsafe extern "C" fn plonk_prove_unshield3(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+) -> i32 {
+    prove_unshield_under(witness_data, witness_data_len, proof_out, proof_out_len, pi_out, pi_out_len, plonk_core::proof_system::ProofRules::KeyBound)
+}
+
+unsafe fn prove_unshield_under(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+    rules: plonk_core::proof_system::ProofRules,
 ) -> i32 {
     ffi_guard!({
     if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
@@ -854,7 +962,7 @@ pub unsafe extern "C" fn plonk_prove_unshield(
         pi_pos: Vec::new(),
     };
 
-    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_unshield(&mut circuit) {
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_unshield_under(&mut circuit, rules) {
         Ok(r) => r,
         Err(e) => return e,
     };
@@ -883,6 +991,35 @@ pub unsafe extern "C" fn plonk_prove_fee(
     proof_out_len: *mut usize,
     pi_out: *mut u8,
     pi_out_len: *mut usize,
+) -> i32 {
+    prove_fee_under(witness_data, witness_data_len, proof_out, proof_out_len, pi_out, pi_out_len, plonk_core::proof_system::ProofRules::Current)
+}
+
+/// `plonk_prove_fee` under the key-bound rules (`plonk_verify3`): same arguments, witness format and results; the
+/// proof passes `plonk_verify3` and not `plonk_verify2`.
+///
+/// # Safety
+/// As `plonk_prove_fee`.
+#[no_mangle]
+pub unsafe extern "C" fn plonk_prove_fee3(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+) -> i32 {
+    prove_fee_under(witness_data, witness_data_len, proof_out, proof_out_len, pi_out, pi_out_len, plonk_core::proof_system::ProofRules::KeyBound)
+}
+
+unsafe fn prove_fee_under(
+    witness_data: *const u8,
+    witness_data_len: usize,
+    proof_out: *mut u8,
+    proof_out_len: *mut usize,
+    pi_out: *mut u8,
+    pi_out_len: *mut usize,
+    rules: plonk_core::proof_system::ProofRules,
 ) -> i32 {
     ffi_guard!({
     if witness_data.is_null() || proof_out_len.is_null() || pi_out_len.is_null() {
@@ -941,7 +1078,7 @@ pub unsafe extern "C" fn plonk_prove_fee(
         pi_pos: Vec::new(),
     };
 
-    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_fee(&mut circuit) {
+    let (proof_bytes, pi_bytes) = match circuits_v1::ffi_prove_fee_under(&mut circuit, rules) {
         Ok(r) => r,
         Err(e) => return e,
     };

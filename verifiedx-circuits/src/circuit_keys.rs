@@ -85,12 +85,28 @@ pub fn compile_all_circuits(
     })
 }
 
+/// Proves `circuit` under `ProofRules::Current`, or under `ProofRules::KeyBound` against `bound_vk` when it is given.
+fn gen_proof<C: Circuit<Fr, EdwardsParameters>>(
+    circuit: &mut C,
+    pp: &UniversalParams,
+    pk: ProverKey<Fr>,
+    bound_vk: Option<&VerifierKey<Fr, PC>>,
+    label: &'static [u8],
+) -> Result<(Proof<Fr, PC>, PublicInputs<Fr>), Error> {
+    match bound_vk {
+        None => circuit.gen_proof::<PC>(pp, pk, label),
+        Some(vk) => circuit.gen_proof_key_bound::<PC>(pp, pk, vk, label),
+    }
+}
+
 // ─── Shield prove/verify ───────────────────────────────────────────
 
-/// Generate a Shield circuit proof.
+/// Generate a Shield circuit proof. Under `ProofRules::Current`, or `ProofRules::KeyBound` when `bound_vk` (the circuit's
+/// verifier key, compiled with `pk`) is given.
 pub fn prove_shield(
     pp: &UniversalParams,
     pk: ProverKey<Fr>,
+    bound_vk: Option<&VerifierKey<Fr, PC>>,
     amount_scaled: Fr,
     randomness: Fr,
     owner_pk: Fr,
@@ -102,7 +118,7 @@ pub fn prove_shield(
         pi_pos: Vec::new(),
     };
 
-    let (proof, pi) = <ShieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(&mut circuit, pp, pk, b"VFX_SHIELD_V2")?;
+    let (proof, pi) = gen_proof(&mut circuit, pp, pk, bound_vk, b"VFX_SHIELD_V2")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -130,13 +146,15 @@ pub fn verify_shield(
 
 // ─── Transfer prove/verify ─────────────────────────────────────────
 
-/// Generate a Transfer circuit proof.
+/// Generate a Transfer circuit proof. Under `ProofRules::Current`, or `ProofRules::KeyBound` when `bound_vk` (the circuit's
+/// verifier key, compiled with `pk`) is given.
 pub fn prove_transfer(
     pp: &UniversalParams,
     pk: ProverKey<Fr>,
+    bound_vk: Option<&VerifierKey<Fr, PC>>,
     circuit: &mut TransferCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = <TransferCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_TRANSFER_V2")?;
+    let (proof, pi) = gen_proof(circuit, pp, pk, bound_vk, b"VFX_TRANSFER_V2")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -164,13 +182,15 @@ pub fn verify_transfer(
 
 // ─── Unshield prove/verify ─────────────────────────────────────────
 
-/// Generate an Unshield circuit proof.
+/// Generate an Unshield circuit proof. Under `ProofRules::Current`, or `ProofRules::KeyBound` when `bound_vk` (the circuit's
+/// verifier key, compiled with `pk`) is given.
 pub fn prove_unshield(
     pp: &UniversalParams,
     pk: ProverKey<Fr>,
+    bound_vk: Option<&VerifierKey<Fr, PC>>,
     circuit: &mut UnshieldCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = <UnshieldCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_UNSHIELD_V2")?;
+    let (proof, pi) = gen_proof(circuit, pp, pk, bound_vk, b"VFX_UNSHIELD_V2")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;
@@ -198,13 +218,15 @@ pub fn verify_unshield(
 
 // ─── Fee prove/verify ──────────────────────────────────────────────
 
-/// Generate a Fee circuit proof.
+/// Generate a Fee circuit proof. Under `ProofRules::Current`, or `ProofRules::KeyBound` when `bound_vk` (the circuit's
+/// verifier key, compiled with `pk`) is given.
 pub fn prove_fee(
     pp: &UniversalParams,
     pk: ProverKey<Fr>,
+    bound_vk: Option<&VerifierKey<Fr, PC>>,
     circuit: &mut FeeCircuit<Fr>,
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let (proof, pi) = <FeeCircuit<Fr> as Circuit<Fr, EdwardsParameters>>::gen_proof::<PC>(circuit, pp, pk, b"VFX_FEE_V2")?;
+    let (proof, pi) = gen_proof(circuit, pp, pk, bound_vk, b"VFX_FEE_V2")?;
 
     let proof_bytes = serialize_proof(&proof)?;
     let pi_bytes = serialize_pi(&pi)?;

@@ -32,7 +32,7 @@ pub(crate) static V1_STATE: Lazy<Mutex<Option<V1Loaded>>> =
 /// The verifier keys in the params file are the circuits as they were when it was made; they judge proofs under the
 /// original rules (`ProofRules::Legacy`), as proofs mined before were judged. The `cur_*` keys, and every prover key,
 /// are compiled at load from the file's universal params for the circuits as this library builds them now; they judge
-/// proofs under the current rules.
+/// proofs under the current rules and the key-bound ones, and the provers bind the `cur_*` key under the latter.
 pub(crate) struct V1Loaded {
     pub pp: UParams,
     pub cur_shield_vk: VerifierKey<Fr, PC>,
@@ -121,7 +121,7 @@ pub fn try_load_v1_params(bytes: &[u8]) -> Result<(), &'static str> {
 impl V1Loaded {
     /// The verifier key that judges a proof of `circuit` under `rules`.
     fn vk(&self, circuit: Circuit, rules: ProofRules) -> VerifierKey<Fr, PC> {
-        let current = rules == ProofRules::Current;
+        let current = rules != ProofRules::Legacy;
         match circuit {
             Circuit::Shield => if current { &self.cur_shield_vk } else { &self.shield_vk },
             Circuit::Transfer => if current { &self.cur_transfer_vk } else { &self.transfer_vk },
@@ -129,6 +129,16 @@ impl V1Loaded {
             Circuit::Fee => if current { &self.cur_fee_vk } else { &self.fee_vk },
         }
         .clone()
+    }
+
+    /// The key a prover binds under `rules`: none under the current rules, the circuit's own (`cur_*`) key under the
+    /// key-bound ones. No prover makes proofs under the original rules.
+    fn prover_bound_vk(&self, circuit: Circuit, rules: ProofRules) -> Result<Option<VerifierKey<Fr, PC>>, i32> {
+        match rules {
+            ProofRules::Legacy => Err(crate::ERR_NOT_IMPLEMENTED),
+            ProofRules::Current => Ok(None),
+            ProofRules::KeyBound => Ok(Some(self.vk(circuit, rules))),
+        }
     }
 }
 
@@ -167,12 +177,18 @@ pub fn pi_positions(circuit: Circuit) -> Vec<usize> {
 
 // ─── Shield FFI helpers ────────────────────────────────────────────
 
-/// Prove a Shield circuit. Returns serialized (proof, pi) or error.
+/// Prove a Shield circuit (current rules). Returns serialized (proof, pi) or error.
 pub fn ffi_prove_shield(amount_scaled: u64, randomness_fr: Fr, owner_pk: Fr) -> Result<(Vec<u8>, Vec<u8>), i32> {
+    ffi_prove_shield_under(amount_scaled, randomness_fr, owner_pk, ProofRules::Current)
+}
+
+/// Prove a Shield circuit under `rules` (`Current` or `KeyBound`).
+pub fn ffi_prove_shield_under(amount_scaled: u64, randomness_fr: Fr, owner_pk: Fr, rules: ProofRules) -> Result<(Vec<u8>, Vec<u8>), i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
     let pk = state.shield_pk.clone().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::prove_shield(&state.pp, pk, Fr::from(amount_scaled), randomness_fr, owner_pk)
+    let bound = state.prover_bound_vk(Circuit::Shield, rules)?;
+    circuit_keys::prove_shield(&state.pp, pk, bound.as_ref(), Fr::from(amount_scaled), randomness_fr, owner_pk)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -186,12 +202,18 @@ pub fn ffi_verify_shield(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRules)
 
 // ─── Transfer FFI helpers ──────────────────────────────────────────
 
-/// Prove a Transfer circuit.
+/// Prove a Transfer circuit (current rules).
 pub fn ffi_prove_transfer(circuit: &mut TransferCircuit<Fr>) -> Result<(Vec<u8>, Vec<u8>), i32> {
+    ffi_prove_transfer_under(circuit, ProofRules::Current)
+}
+
+/// Prove a Transfer circuit under `rules` (`Current` or `KeyBound`).
+pub fn ffi_prove_transfer_under(circuit: &mut TransferCircuit<Fr>, rules: ProofRules) -> Result<(Vec<u8>, Vec<u8>), i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
     let pk = state.transfer_pk.clone().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::prove_transfer(&state.pp, pk, circuit)
+    let bound = state.prover_bound_vk(Circuit::Transfer, rules)?;
+    circuit_keys::prove_transfer(&state.pp, pk, bound.as_ref(), circuit)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -205,12 +227,18 @@ pub fn ffi_verify_transfer(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRule
 
 // ─── Unshield FFI helpers ──────────────────────────────────────────
 
-/// Prove an Unshield circuit.
+/// Prove an Unshield circuit (current rules).
 pub fn ffi_prove_unshield(circuit: &mut UnshieldCircuit<Fr>) -> Result<(Vec<u8>, Vec<u8>), i32> {
+    ffi_prove_unshield_under(circuit, ProofRules::Current)
+}
+
+/// Prove an Unshield circuit under `rules` (`Current` or `KeyBound`).
+pub fn ffi_prove_unshield_under(circuit: &mut UnshieldCircuit<Fr>, rules: ProofRules) -> Result<(Vec<u8>, Vec<u8>), i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
     let pk = state.unshield_pk.clone().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::prove_unshield(&state.pp, pk, circuit)
+    let bound = state.prover_bound_vk(Circuit::Unshield, rules)?;
+    circuit_keys::prove_unshield(&state.pp, pk, bound.as_ref(), circuit)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
@@ -224,12 +252,18 @@ pub fn ffi_verify_unshield(proof_bytes: &[u8], pi_bytes: &[u8], rules: ProofRule
 
 // ─── Fee FFI helpers ───────────────────────────────────────────────
 
-/// Prove a Fee circuit.
+/// Prove a Fee circuit (current rules).
 pub fn ffi_prove_fee(circuit: &mut FeeCircuit<Fr>) -> Result<(Vec<u8>, Vec<u8>), i32> {
+    ffi_prove_fee_under(circuit, ProofRules::Current)
+}
+
+/// Prove a Fee circuit under `rules` (`Current` or `KeyBound`).
+pub fn ffi_prove_fee_under(circuit: &mut FeeCircuit<Fr>, rules: ProofRules) -> Result<(Vec<u8>, Vec<u8>), i32> {
     let guard = v1_lock();
     let state = guard.as_ref().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
     let pk = state.fee_pk.clone().ok_or(crate::ERR_NOT_IMPLEMENTED)?;
-    circuit_keys::prove_fee(&state.pp, pk, circuit)
+    let bound = state.prover_bound_vk(Circuit::Fee, rules)?;
+    circuit_keys::prove_fee(&state.pp, pk, bound.as_ref(), circuit)
         .map_err(|_| crate::ERR_CRYPTO)
 }
 
